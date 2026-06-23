@@ -11,8 +11,18 @@ import cv2
 import numpy as np
 
 
+if hasattr(cv2, "setLogLevel"):
+    cv2.setLogLevel(0)
+
+
 FRAME_W = 640
 FRAME_H = 360
+BACKENDS = {
+    "dshow": cv2.CAP_DSHOW,
+    "msmf": cv2.CAP_MSMF,
+    "any": cv2.CAP_ANY,
+}
+AUTO_BACKENDS = ("dshow", "msmf", "any")
 
 
 @dataclass
@@ -112,10 +122,17 @@ class SyntheticCamera:
 
 
 class MotionDetector:
-    def __init__(self, camera_id: int, min_area: int = 900, warmup_frames: int = 20) -> None:
+    def __init__(
+        self,
+        camera_id: int,
+        min_area: int = 900,
+        warmup_frames: int = 20,
+        roi: Optional[tuple[int, int, int, int]] = None,
+    ) -> None:
         self.camera_id = camera_id
         self.min_area = min_area
         self.warmup_frames = warmup_frames
+        self.roi = roi
         self.frame_count = 0
         self.subtractor = cv2.createBackgroundSubtractorMOG2(
             history=120,
@@ -125,7 +142,8 @@ class MotionDetector:
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
         self.frame_count += 1
-        mask = self.subtractor.apply(frame)
+        view, offset_x, offset_y = crop_roi(frame, self.roi)
+        mask = self.subtractor.apply(view)
         if self.frame_count <= self.warmup_frames:
             return []
 
@@ -141,19 +159,20 @@ class MotionDetector:
             if area < self.min_area:
                 continue
             x, y, w, h = cv2.boundingRect(contour)
-            if w * h > frame.shape[0] * frame.shape[1] * 0.65:
+            if w * h > view.shape[0] * view.shape[1] * 0.65:
                 continue
             if w < 15 or h < 15:
                 continue
-            crop = frame[y : y + h, x : x + w]
+            crop = view[y : y + h, x : x + w]
             if crop.size == 0:
                 continue
             feature = extract_feature(crop, (w, h), area)
+            bbox = (x + offset_x, y + offset_y, w, h)
             detections.append(
                 Detection(
                     camera_id=self.camera_id,
-                    bbox=(x, y, w, h),
-                    center=(x + w / 2.0, y + h / 2.0),
+                    bbox=bbox,
+                    center=(bbox[0] + w / 2.0, bbox[1] + h / 2.0),
                     area=area,
                     feature=feature,
                     crop=crop,
@@ -334,8 +353,50 @@ def euclidean(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
-def draw_tracks(frame: np.ndarray, tracks: Iterable[Track], camera_id: int) -> np.ndarray:
+def crop_roi(
+    frame: np.ndarray,
+    roi: Optional[tuple[int, int, int, int]],
+) -> tuple[np.ndarray, int, int]:
+    if roi is None:
+        return frame, 0, 0
+
+    x, y, w, h = clamp_roi(roi, frame.shape[1], frame.shape[0])
+    return frame[y : y + h, x : x + w], x, y
+
+
+def clamp_roi(
+    roi: tuple[int, int, int, int],
+    frame_width: int,
+    frame_height: int,
+) -> tuple[int, int, int, int]:
+    x, y, w, h = roi
+    x = max(0, min(x, frame_width - 1))
+    y = max(0, min(y, frame_height - 1))
+    w = max(1, min(w, frame_width - x))
+    h = max(1, min(h, frame_height - y))
+    return x, y, w, h
+
+
+def draw_tracks(
+    frame: np.ndarray,
+    tracks: Iterable[Track],
+    camera_id: int,
+    roi: Optional[tuple[int, int, int, int]] = None,
+) -> np.ndarray:
     output = frame.copy()
+    if roi is not None:
+        x, y, w, h = clamp_roi(roi, output.shape[1], output.shape[0])
+        cv2.rectangle(output, (x, y), (x + w, y + h), (120, 120, 120), 1)
+        cv2.putText(
+            output,
+            "ROI",
+            (x + 8, max(22, y + 24)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (190, 190, 190),
+            1,
+            cv2.LINE_AA,
+        )
     cv2.putText(
         output,
         f"Camera {camera_id + 1}",
@@ -409,46 +470,90 @@ def id_color(global_id: int) -> tuple[int, int, int]:
     return palette[(global_id - 1) % len(palette)]
 
 
+def parse_roi(value: str) -> tuple[int, int, int, int]:
+    try:
+        parts = [int(part.strip()) for part in value.split(",")]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("ROI must be x,y,w,h with integers.") from exc
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError("ROI must be x,y,w,h.")
+    if parts[2] <= 0 or parts[3] <= 0:
+        raise argparse.ArgumentTypeError("ROI width and height must be positive.")
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def backend_names(selected: str) -> tuple[str, ...]:
+    if selected == "auto":
+        return AUTO_BACKENDS
+    return (selected,)
+
+
+def open_camera(index: int, backend: str) -> tuple[Optional[cv2.VideoCapture], Optional[str]]:
+    for backend_name in backend_names(backend):
+        cap = cv2.VideoCapture(index, BACKENDS[backend_name])
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        if not cap.isOpened():
+            cap.release()
+            continue
+
+        for _ in range(3):
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                return cap, backend_name
+        cap.release()
+    return None, None
+
+
 def open_sources(args: argparse.Namespace):
     if args.demo:
         return SyntheticCamera(0), SyntheticCamera(1)
 
-    cap_a = cv2.VideoCapture(args.cam_a, cv2.CAP_DSHOW)
-    cap_b = cv2.VideoCapture(args.cam_b, cv2.CAP_DSHOW)
-    for cap in (cap_a, cap_b):
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
-        cap.set(cv2.CAP_PROP_FPS, 30)
+    cap_a, backend_a = open_camera(args.cam_a, args.backend)
+    cap_b, backend_b = open_camera(args.cam_b, args.backend)
 
-    if not cap_a.isOpened() or not cap_b.isOpened():
-        cap_a.release()
-        cap_b.release()
+    if cap_a is None or cap_b is None:
+        if cap_a is not None:
+            cap_a.release()
+        if cap_b is not None:
+            cap_b.release()
+        if args.fallback_demo:
+            print("Could not open both physical cameras; falling back to synthetic demo.")
+            return SyntheticCamera(0), SyntheticCamera(1)
         raise RuntimeError(
             "Could not open both cameras. Use --probe to check indexes, "
-            "or run --demo to verify the MVP without cameras."
+            "--backend auto for fallback backends, or --fallback-demo for a safe demo."
         )
+    print(f"Opened cameras: A index={args.cam_a} backend={backend_a}, B index={args.cam_b} backend={backend_b}")
     return cap_a, cap_b
 
 
-def probe_cameras(max_index: int) -> None:
+def probe_cameras(max_index: int, backend: str) -> None:
     print("Probing camera indexes...")
     for index in range(max_index + 1):
-        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        ok, frame = cap.read() if cap.isOpened() else (False, None)
-        if ok and frame is not None:
-            print(f"  index {index}: OK, frame={frame.shape[1]}x{frame.shape[0]}")
+        cap, backend_name = open_camera(index, backend)
+        if cap is not None:
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                print(f"  index {index}: OK, backend={backend_name}, frame={frame.shape[1]}x{frame.shape[0]}")
+            else:
+                print(f"  index {index}: unavailable")
+            cap.release()
         else:
             print(f"  index {index}: unavailable")
-        cap.release()
 
 
 def run(args: argparse.Namespace) -> int:
     if args.probe:
-        probe_cameras(args.probe_max)
+        probe_cameras(args.probe_max, args.backend)
         return 0
 
     sources = open_sources(args)
-    detectors = [MotionDetector(0, args.min_area), MotionDetector(1, args.min_area)]
+    detectors = [
+        MotionDetector(0, args.min_area, args.warmup_frames, args.roi_a),
+        MotionDetector(1, args.min_area, args.warmup_frames, args.roi_b),
+    ]
     tracker = CrossCameraTracker(
         max_missed=args.max_missed,
         lost_ttl=args.lost_ttl,
@@ -480,8 +585,8 @@ def run(args: argparse.Namespace) -> int:
             if not args.headless:
                 canvas = np.hstack(
                     [
-                        draw_tracks(frame_a, tracks_a, 0),
-                        draw_tracks(frame_b, tracks_b, 1),
+                        draw_tracks(frame_a, tracks_a, 0, args.roi_a),
+                        draw_tracks(frame_b, tracks_b, 1, args.roi_b),
                     ]
                 )
                 canvas = draw_event_panel(canvas, tracker.events)
@@ -517,12 +622,26 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--cam-a", type=int, default=0, help="Camera A index.")
     parser.add_argument("--cam-b", type=int, default=1, help="Camera B index.")
+    parser.add_argument(
+        "--backend",
+        choices=("auto", *BACKENDS.keys()),
+        default="auto",
+        help="OpenCV camera backend. auto tries dshow, msmf, then any.",
+    )
     parser.add_argument("--demo", action="store_true", help="Use synthetic two-camera demo.")
+    parser.add_argument(
+        "--fallback-demo",
+        action="store_true",
+        help="Use the synthetic demo if both physical cameras cannot be opened.",
+    )
     parser.add_argument("--headless", action="store_true", help="Disable GUI window.")
     parser.add_argument("--frames", type=int, default=0, help="Stop after N frames; 0 means manual stop.")
     parser.add_argument("--probe", action="store_true", help="List available camera indexes.")
     parser.add_argument("--probe-max", type=int, default=5, help="Max camera index for --probe.")
     parser.add_argument("--min-area", type=int, default=900, help="Minimum moving contour area.")
+    parser.add_argument("--warmup-frames", type=int, default=20, help="Frames used to stabilize background.")
+    parser.add_argument("--roi-a", type=parse_roi, help="Camera A ROI as x,y,w,h after resize to 640x360.")
+    parser.add_argument("--roi-b", type=parse_roi, help="Camera B ROI as x,y,w,h after resize to 640x360.")
     parser.add_argument("--max-missed", type=int, default=14, help="Frames before a track becomes lost.")
     parser.add_argument("--lost-ttl", type=float, default=8.0, help="Seconds to keep lost IDs matchable.")
     parser.add_argument(

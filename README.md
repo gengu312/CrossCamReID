@@ -15,6 +15,21 @@
 
 当前版本先使用 OpenCV 的传统视觉方法完成闭环，不依赖训练模型，方便快速演示和调试。后续可以把检测模块替换成 YOLO，把重识别模块替换成深度学习 Re-ID 特征。
 
+## 技术栈与版本
+
+当前仓库是 OpenCV MVP 版本，不是 YOLO 训练版。
+
+当前技术栈：
+
+- Python 3.14.4
+- OpenCV 4.13.0.92
+- NumPy 2.5.0
+- OpenCV MOG2 背景建模：用于运动目标检测
+- 简单质心/距离匹配：用于单摄像头内短时跟踪
+- HSV 颜色直方图 + 形状比例：用于跨摄像头轻量 Re-ID 匹配
+
+后续 YOLO 版本会把“运动目标检测”替换为“训练后的铅笔/文具目标检测模型”，但跨摄像头 ID 管理、相似度匹配和可视化框架可以继续复用。
+
 ## 当前 MVP 已实现
 
 - 支持两个物理摄像头同时读取。
@@ -25,6 +40,9 @@
 - 当目标从一个摄像头消失、另一个摄像头出现时，计算相似度并继承全局 ID。
 - 实时窗口显示两个摄像头画面、检测框、全局 ID、局部 ID、相似度和事件日志。
 - 支持无窗口 headless 验证模式，方便确认程序是否跑通。
+- 支持摄像头后端自动尝试，默认依次尝试 DirectShow、MSMF 和 OpenCV 默认后端。
+- 支持 ROI 检测区域，只检测画面中的指定桌面/通道区域，减少背景误检。
+- 支持物理摄像头不可用时回退到内置 demo，便于演示时兜底。
 
 ## 环境安装
 
@@ -93,6 +111,13 @@ index 1: OK
 
 如果只看到一个 `OK`，说明当前电脑只开放了一个摄像头，或者另一个摄像头被微信、腾讯会议、浏览器、系统相机等程序占用。此时真实双摄命令会启动失败，可以先用 `--demo` 验证算法流程。
 
+默认会自动尝试多个 OpenCV 摄像头后端。也可以手动指定：
+
+```powershell
+python src\crosscam_mvp.py --probe --backend dshow
+python src\crosscam_mvp.py --probe --backend msmf
+```
+
 ### 3. 使用两个真实摄像头运行
 
 ```powershell
@@ -109,6 +134,28 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1
 
 ```powershell
 python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --headless --frames 90
+```
+
+如果现场只识别到一个摄像头，但仍然想先展示系统流程，可以使用回退模式：
+
+```powershell
+python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --fallback-demo
+```
+
+### 4. 限定检测区域提升稳定性
+
+真实场景中建议只检测桌面或目标通过区域，减少人手、屏幕、背景运动造成的误检。ROI 参数格式是 `x,y,w,h`，坐标基于程序内部缩放后的 `640x360` 画面。
+
+示例：
+
+```powershell
+python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --roi-a 60,80,520,220 --roi-b 60,80,520,220
+```
+
+如果启动前背景还在变化，可以增加背景预热帧数：
+
+```powershell
+python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --warmup-frames 45
 ```
 
 ## 真实物体测试方法
@@ -167,7 +214,9 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --headless --frames 90
 
 优先级最高，适合短期继续完善演示：
 
-- 增加手动 ROI 区域，只检测桌面或指定区域，减少误检。
+- 已完成：增加摄像头后端自动尝试，提升不同 Windows 摄像头驱动下的可用性。
+- 已完成：增加手动 ROI 区域，只检测桌面或指定区域，减少误检。
+- 已完成：增加物理摄像头不可用时的 demo 回退模式，保证演示入口可用。
 - 增加“进入区 / 离开区”判断，让跨摄像头匹配更稳定。
 - 增加目标截图保存，方便后续训练 YOLO。
 - 增加 CSV 日志，记录时间、摄像头、全局 ID、相似度。
@@ -202,7 +251,7 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --headless --frames 90
 
 ### 阶段 4：最稳演示兜底
 
-如果导师要求演示必须非常稳定，可以给物体贴小标签：
+如果演示要求非常稳定，可以给物体贴小标签：
 
 - ArUco
 - AprilTag
@@ -210,7 +259,7 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --headless --frames 90
 
 这样系统可以直接读取唯一 ID，跨摄像头识别会非常稳定。可以作为工程演示兜底方案，同时保留无标记 Re-ID 作为研究方向。
 
-## 建议对导师的表述
+## 项目定位
 
 本项目不是简单的“OpenCV 识别铅笔”，而是：
 
