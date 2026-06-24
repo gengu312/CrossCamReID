@@ -45,10 +45,15 @@ function Find-Python {
 
 $PythonExe = Find-Python
 
+function Write-Utf8Host {
+    param([string]$Base64Text)
+    & $PythonExe -c "import base64; print(base64.b64decode('$Base64Text').decode('utf-8'))"
+}
+
 if (-not $SkipInstall) {
-    & $PythonExe -c "import cv2, numpy" *> $null
+    & $PythonExe -c "import cv2, numpy, PIL" *> $null
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Installing Python dependencies from requirements.txt..."
+        Write-Utf8Host "5q2j5Zyo5LuOIHJlcXVpcmVtZW50cy50eHQg5a6J6KOFIFB5dGhvbiDkvp3otZYuLi4="
         & $PythonExe -m pip install -r requirements.txt
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
@@ -105,7 +110,7 @@ if ($Frames -gt 0) {
     $AppArgs += @("--frames", "$Frames")
 }
 
-Write-Host "Running CrossCamReID..."
+Write-Utf8Host "5q2j5Zyo6L+Q6KGMIENyb3NzQ2FtUmVJRC4uLg=="
 Write-Host "$PythonExe $($AppArgs -join ' ')"
 Write-Host ""
 

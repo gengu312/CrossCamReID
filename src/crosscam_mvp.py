@@ -12,6 +12,13 @@ from typing import Deque, Iterable, Optional
 import cv2
 import numpy as np
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+
 
 if hasattr(cv2, "setLogLevel"):
     cv2.setLogLevel(0)
@@ -25,6 +32,21 @@ BACKENDS = {
     "any": cv2.CAP_ANY,
 }
 AUTO_BACKENDS = ("dshow", "msmf", "any")
+WINDOW_NAME = "CrossCamReID MVP"
+
+
+@dataclass(frozen=True)
+class UiButton:
+    label: str
+    action: str
+    rect: tuple[int, int, int, int]
+    primary: bool = False
+
+
+@dataclass
+class UiState:
+    buttons: list[UiButton] = field(default_factory=list)
+    pending_action: Optional[str] = None
 
 
 @dataclass
@@ -351,7 +373,7 @@ class CrossCameraTracker:
         saved_path: Optional[Path],
     ) -> None:
         target_id = self.registered_target_id if self.registered_target_id is not None else 1
-        message = f"Cam{camera_id + 1}: registered target as G{target_id:03d}"
+        message = f"摄像头{camera_id + 1}：已注册目标为 G{target_id:03d}"
         if saved_path is not None:
             message += f" ({saved_path})"
         self._log(
@@ -409,7 +431,7 @@ class CrossCameraTracker:
                     event_type,
                     camera_id,
                     global_id,
-                    f"Cam{camera_id + 1}: new object G{global_id:03d}",
+                    f"摄像头{camera_id + 1}：发现新目标 G{global_id:03d}",
                     similarity=similarity,
                     target_similarity=detection.target_similarity,
                     bbox=detection.bbox,
@@ -480,10 +502,10 @@ class CrossCameraTracker:
         target_similarity: Optional[float],
     ) -> str:
         if event_type == "target_matched":
-            sim_text = "" if target_similarity is None else f", target_sim={target_similarity:.2f}"
-            return f"Cam{camera_id + 1}: target matched G{global_id:03d}{sim_text}"
-        sim_text = "" if similarity is None else f", sim={similarity:.2f}"
-        return f"Cam{camera_id + 1}: matched G{global_id:03d}{sim_text}"
+            sim_text = "" if target_similarity is None else f"，目标相似度={target_similarity:.2f}"
+            return f"摄像头{camera_id + 1}：匹配到目标 G{global_id:03d}{sim_text}"
+        sim_text = "" if similarity is None else f"，相似度={similarity:.2f}"
+        return f"摄像头{camera_id + 1}：匹配到 G{global_id:03d}{sim_text}"
 
     def _note_seen(self, global_id: int, camera_id: int) -> None:
         cameras = self.global_seen_cameras.setdefault(global_id, set())
@@ -522,7 +544,7 @@ class CrossCameraTracker:
             "left",
             track.camera_id,
             track.global_id,
-            f"Cam{track.camera_id + 1}: G{track.global_id:03d} left view",
+            f"摄像头{track.camera_id + 1}：G{track.global_id:03d} 离开画面",
             local_id=track.local_id,
             bbox=track.bbox,
         )
@@ -735,7 +757,7 @@ def register_best_detection(
     if not detections:
         tracker.events.appendleft(
             f"{time.strftime('%H:%M:%S', time.localtime(now))} "
-            f"Cam{camera_id + 1}: no moving target to register"
+            f"摄像头{camera_id + 1}：没有可注册的运动目标"
         )
         return False
     register_target_from_detection(target_profile, tracker, event_logger, detections[0], log_dir, now)
@@ -841,43 +863,106 @@ def draw_tracks(
     return output
 
 
-def draw_event_panel(frame: np.ndarray, events: Iterable[str]) -> np.ndarray:
-    panel_height = 148
+_FONT_CACHE: dict[int, object] = {}
+
+
+def get_ui_font(size: int):
+    if ImageFont is None:
+        return None
+    if size in _FONT_CACHE:
+        return _FONT_CACHE[size]
+
+    candidates = [
+        Path("C:/Windows/Fonts/msyh.ttc"),
+        Path("C:/Windows/Fonts/simhei.ttf"),
+        Path("C:/Windows/Fonts/simsun.ttc"),
+        Path("C:/Windows/Fonts/arial.ttf"),
+    ]
+    for path in candidates:
+        if path.exists():
+            _FONT_CACHE[size] = ImageFont.truetype(str(path), size)
+            return _FONT_CACHE[size]
+    _FONT_CACHE[size] = ImageFont.load_default()
+    return _FONT_CACHE[size]
+
+
+def draw_text(
+    image: np.ndarray,
+    text: str,
+    org: tuple[int, int],
+    color: tuple[int, int, int],
+    size: int = 18,
+) -> None:
+    if Image is None or ImageDraw is None:
+        cv2.putText(image, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1, cv2.LINE_AA)
+        return
+
+    font = get_ui_font(size)
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(rgb)
+    drawer = ImageDraw.Draw(pil_image)
+    drawer.text(org, text, font=font, fill=(color[2], color[1], color[0]))
+    image[:] = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+
+
+def draw_button(panel: np.ndarray, button: UiButton) -> None:
+    x, y, w, h = button.rect
+    fill = (48, 112, 180) if button.primary else (58, 64, 72)
+    border = (110, 175, 240) if button.primary else (96, 105, 116)
+    cv2.rectangle(panel, (x, y), (x + w, y + h), fill, -1)
+    cv2.rectangle(panel, (x, y), (x + w, y + h), border, 1)
+    draw_text(panel, button.label, (x + 14, y + 9), (245, 248, 252), 17)
+
+
+def draw_event_panel(frame: np.ndarray, events: Iterable[str]) -> tuple[np.ndarray, list[UiButton]]:
+    panel_height = 164
     panel = np.full((panel_height, frame.shape[1], 3), (24, 27, 31), dtype=np.uint8)
-    cv2.putText(
-        panel,
-        "Events",
-        (16, 26),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (235, 235, 235),
-        2,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        panel,
-        "Keys: r/t auto-register target, m/n manual select, q quit",
-        (110, 26),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        (165, 180, 195),
-        1,
-        cv2.LINE_AA,
-    )
-    y = 58
+    draw_text(panel, "事件日志", (16, 14), (235, 235, 235), 19)
+    draw_text(panel, "先让目标轻微移动并出现检测框，再点击注册按钮。手动框选会短暂停止画面。", (110, 16), (170, 184, 198), 16)
+
+    buttons = [
+        UiButton("注册左侧目标", "register_left", (16, 48, 142, 38), True),
+        UiButton("注册右侧目标", "register_right", (168, 48, 142, 38), True),
+        UiButton("手动框选左侧", "manual_left", (320, 48, 142, 38)),
+        UiButton("手动框选右侧", "manual_right", (472, 48, 142, 38)),
+        UiButton("退出", "quit", (624, 48, 82, 38)),
+    ]
+    for button in buttons:
+        draw_button(panel, button)
+
+    y = 112
     for event in list(events)[:4]:
-        cv2.putText(
-            panel,
-            event,
-            (16, y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.52,
-            (210, 220, 230),
-            1,
-            cv2.LINE_AA,
+        draw_text(panel, event, (16, y), (210, 220, 230), 15)
+        y += 22
+    return np.vstack([frame, panel]), buttons
+
+
+def offset_buttons(buttons: list[UiButton], offset_y: int) -> list[UiButton]:
+    return [
+        UiButton(
+            button.label,
+            button.action,
+            (button.rect[0], button.rect[1] + offset_y, button.rect[2], button.rect[3]),
+            button.primary,
         )
-        y += 24
-    return np.vstack([frame, panel])
+        for button in buttons
+    ]
+
+
+def button_at(buttons: list[UiButton], x: int, y: int) -> Optional[UiButton]:
+    for button in buttons:
+        bx, by, bw, bh = button.rect
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            return button
+    return None
+
+
+def on_mouse(event: int, x: int, y: int, _flags: int, userdata) -> None:
+    if event != cv2.EVENT_LBUTTONDOWN or not isinstance(userdata, UiState):
+        return
+    button = button_at(userdata.buttons, x, y)
+    if button is not None:
+        userdata.pending_action = button.action
 
 
 def id_color(global_id: int) -> tuple[int, int, int]:
@@ -940,29 +1025,29 @@ def open_sources(args: argparse.Namespace):
         if cap_b is not None:
             cap_b.release()
         if args.fallback_demo:
-            print("Could not open both physical cameras; falling back to synthetic demo.")
+            print("无法同时打开两个物理摄像头，已切换到内置模拟演示。")
             return SyntheticCamera(0), SyntheticCamera(1)
         raise RuntimeError(
-            "Could not open both cameras. Use --probe to check indexes, "
-            "--backend auto for fallback backends, or --fallback-demo for a safe demo."
+            "无法同时打开两个摄像头。可以先用 --probe 检查索引，"
+            "或使用 --backend auto / --fallback-demo。"
         )
-    print(f"Opened cameras: A index={args.cam_a} backend={backend_a}, B index={args.cam_b} backend={backend_b}")
+    print(f"已打开摄像头：A 索引={args.cam_a} 后端={backend_a}，B 索引={args.cam_b} 后端={backend_b}")
     return cap_a, cap_b
 
 
 def probe_cameras(max_index: int, backend: str) -> None:
-    print("Probing camera indexes...")
+    print("正在探测摄像头索引...")
     for index in range(max_index + 1):
         cap, backend_name = open_camera(index, backend)
         if cap is not None:
             ok, frame = cap.read()
             if ok and frame is not None:
-                print(f"  index {index}: OK, backend={backend_name}, frame={frame.shape[1]}x{frame.shape[0]}")
+                print(f"  索引 {index}: 可用，后端={backend_name}，画面={frame.shape[1]}x{frame.shape[0]}")
             else:
-                print(f"  index {index}: unavailable")
+                print(f"  索引 {index}: 不可用")
             cap.release()
         else:
-            print(f"  index {index}: unavailable")
+            print(f"  索引 {index}: 不可用")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1008,6 +1093,10 @@ def run(args: argparse.Namespace) -> int:
         event_logger=event_logger,
     )
     target_profile = TargetProfile()
+    ui_state = UiState()
+    if not args.headless:
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+        cv2.setMouseCallback(WINDOW_NAME, on_mouse, ui_state)
 
     processed = 0
     matched_seen = False
@@ -1016,7 +1105,7 @@ def run(args: argparse.Namespace) -> int:
             ok_a, frame_a = sources[0].read()
             ok_b, frame_b = sources[1].read()
             if not ok_a or not ok_b:
-                print("A video source stopped producing frames.")
+                print("有一个视频源停止输出画面。")
                 break
 
             frame_a = cv2.resize(frame_a, (FRAME_W, FRAME_H))
@@ -1059,12 +1148,27 @@ def run(args: argparse.Namespace) -> int:
                         draw_tracks(frame_b, tracks_b, 1, args.roi_b),
                     ]
                 )
-                canvas = draw_event_panel(canvas, tracker.events)
-                cv2.imshow("CrossCamReID MVP", canvas)
+                content_height = canvas.shape[0]
+                canvas, buttons = draw_event_panel(canvas, tracker.events)
+                ui_state.buttons = offset_buttons(buttons, content_height)
+                cv2.imshow(WINDOW_NAME, canvas)
                 key = cv2.waitKey(1) & 0xFF
+                action = ui_state.pending_action
+                ui_state.pending_action = None
                 if key in (27, ord("q")):
+                    action = "quit"
+                elif key in (ord("r"), ord("1")):
+                    action = "register_left"
+                elif key in (ord("t"), ord("2")):
+                    action = "register_right"
+                elif key in (ord("m"), ord("3")):
+                    action = "manual_left"
+                elif key in (ord("n"), ord("4")):
+                    action = "manual_right"
+
+                if action == "quit":
                     break
-                if key in (ord("r"), ord("1")):
+                if action == "register_left":
                     register_best_detection(
                         target_profile,
                         tracker,
@@ -1074,7 +1178,7 @@ def run(args: argparse.Namespace) -> int:
                         log_dir,
                         time.time(),
                     )
-                if key in (ord("t"), ord("2")):
+                if action == "register_right":
                     register_best_detection(
                         target_profile,
                         tracker,
@@ -1084,12 +1188,12 @@ def run(args: argparse.Namespace) -> int:
                         log_dir,
                         time.time(),
                     )
-                if key in (ord("m"), ord("3")):
+                if action == "manual_left":
                     selected = select_target_from_frame(frame_a, 0)
                     if selected is not None:
                         crop, bbox = selected
                         register_target(target_profile, tracker, event_logger, crop, bbox, 0, log_dir, time.time())
-                if key in (ord("n"), ord("4")):
+                if action == "manual_right":
                     selected = select_target_from_frame(frame_b, 1)
                     if selected is not None:
                         crop, bbox = selected
@@ -1105,12 +1209,12 @@ def run(args: argparse.Namespace) -> int:
         if not args.headless:
             cv2.destroyAllWindows()
 
-    print(f"Processed frames: {processed}")
-    print(f"Cross-camera match observed: {'yes' if matched_seen else 'no'}")
+    print(f"已处理帧数：{processed}")
+    print(f"是否观察到跨摄像头匹配：{'是' if matched_seen else '否'}")
     if event_logger.csv_path is not None:
-        print(f"Event log: {event_logger.csv_path}")
+        print(f"事件日志：{event_logger.csv_path}")
     if tracker.events:
-        print("Recent events:")
+        print("最近事件：")
         for event in reversed(list(tracker.events)):
             print(f"  {event}")
 
