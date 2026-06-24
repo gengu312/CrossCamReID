@@ -68,6 +68,36 @@ numpy 2.5.0
 
 ## 运行方式
 
+### 0. 一键运行
+
+当前电脑已验证的摄像头索引：
+
+```text
+0 = 笔记本自带摄像头
+2 = RealSense RGB 摄像头
+```
+
+双击项目根目录下的：
+
+```text
+run_crosscam.bat
+```
+
+它会自动使用当前推荐参数运行：
+
+```powershell
+python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480,220 --roi-b 80,80,480,220 --warmup-frames 45 --min-area 5000 --cross-threshold 0.72
+```
+
+也可以在 PowerShell 里使用脚本参数：
+
+```powershell
+.\run_crosscam.bat -Probe
+.\run_crosscam.bat -Demo
+.\run_crosscam.bat -Headless -Frames 120
+.\run_crosscam.bat -CamA 0 -CamB 2
+```
+
 ### 1. 无摄像头模拟测试
 
 这个命令会打开一个窗口，显示两个模拟摄像头。一个“铅笔状物体”会先出现在左侧摄像头，再出现在右侧摄像头，系统会把它匹配成同一个全局 ID。
