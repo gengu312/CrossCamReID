@@ -33,6 +33,7 @@ class Detection:
     bbox: tuple[int, int, int, int]
     center: tuple[float, float]
     area: float
+    score: float
     feature: np.ndarray
     crop: np.ndarray
 
@@ -191,11 +192,25 @@ class MotionDetector:
         min_area: int = 900,
         warmup_frames: int = 20,
         roi: Optional[tuple[int, int, int, int]] = None,
+        target_mode: str = "general",
+        single_object: bool = False,
+        max_area_ratio: float = 0.65,
+        max_shape_ratio: float = 1.0,
+        min_long_side: int = 0,
+        max_short_side: int = 0,
+        max_detections: int = 4,
     ) -> None:
         self.camera_id = camera_id
         self.min_area = min_area
         self.warmup_frames = warmup_frames
         self.roi = roi
+        self.target_mode = target_mode
+        self.single_object = single_object
+        self.max_area_ratio = max_area_ratio
+        self.max_shape_ratio = max_shape_ratio
+        self.min_long_side = min_long_side
+        self.max_short_side = max_short_side
+        self.max_detections = max_detections
         self.frame_count = 0
         self.subtractor = cv2.createBackgroundSubtractorMOG2(
             history=120,
@@ -222,27 +237,40 @@ class MotionDetector:
             if area < self.min_area:
                 continue
             x, y, w, h = cv2.boundingRect(contour)
-            if w * h > view.shape[0] * view.shape[1] * 0.65:
+            bbox_area = w * h
+            if bbox_area > view.shape[0] * view.shape[1] * self.max_area_ratio:
                 continue
             if w < 15 or h < 15:
+                continue
+            long_side = max(w, h)
+            short_side = min(w, h)
+            shape_ratio = short_side / max(1, long_side)
+            if self.min_long_side > 0 and long_side < self.min_long_side:
+                continue
+            if self.max_short_side > 0 and short_side > self.max_short_side:
+                continue
+            if self.max_shape_ratio < 1.0 and shape_ratio > self.max_shape_ratio:
                 continue
             crop = view[y : y + h, x : x + w]
             if crop.size == 0:
                 continue
             feature = extract_feature(crop, (w, h), area)
             bbox = (x + offset_x, y + offset_y, w, h)
+            score = detection_score(area, w, h, self.target_mode)
             detections.append(
                 Detection(
                     camera_id=self.camera_id,
                     bbox=bbox,
                     center=(bbox[0] + w / 2.0, bbox[1] + h / 2.0),
                     area=area,
+                    score=score,
                     feature=feature,
                     crop=crop,
                 )
             )
-        detections.sort(key=lambda item: item.area, reverse=True)
-        return detections[:4]
+        detections.sort(key=lambda item: item.score, reverse=True)
+        limit = 1 if self.single_object else self.max_detections
+        return detections[:limit]
 
 
 class CrossCameraTracker:
@@ -471,6 +499,21 @@ def euclidean(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
+def detection_score(area: float, width: int, height: int, target_mode: str) -> float:
+    long_side = max(width, height)
+    short_side = max(1, min(width, height))
+    elongation = long_side / short_side
+    fill_ratio = area / max(1.0, width * height)
+
+    if target_mode == "pencil":
+        # A pencil-like motion blob is usually long, narrow, and not a huge full-body region.
+        elongation_bonus = min(elongation, 8.0)
+        compactness_penalty = max(0.25, min(1.0, fill_ratio))
+        return area * elongation_bonus * compactness_penalty
+
+    return area
+
+
 def crop_roi(
     frame: np.ndarray,
     roi: Optional[tuple[int, int, int, int]],
@@ -670,8 +713,32 @@ def run(args: argparse.Namespace) -> int:
     event_logger = EventLogger(not args.no_log, Path(args.log_dir))
     sources = open_sources(args)
     detectors = [
-        MotionDetector(0, args.min_area, args.warmup_frames, args.roi_a),
-        MotionDetector(1, args.min_area, args.warmup_frames, args.roi_b),
+        MotionDetector(
+            0,
+            args.min_area,
+            args.warmup_frames,
+            args.roi_a,
+            target_mode=args.target_mode,
+            single_object=args.single_object,
+            max_area_ratio=args.max_area_ratio,
+            max_shape_ratio=args.max_shape_ratio,
+            min_long_side=args.min_long_side,
+            max_short_side=args.max_short_side,
+            max_detections=args.max_detections,
+        ),
+        MotionDetector(
+            1,
+            args.min_area,
+            args.warmup_frames,
+            args.roi_b,
+            target_mode=args.target_mode,
+            single_object=args.single_object,
+            max_area_ratio=args.max_area_ratio,
+            max_shape_ratio=args.max_shape_ratio,
+            min_long_side=args.min_long_side,
+            max_short_side=args.max_short_side,
+            max_detections=args.max_detections,
+        ),
     ]
     tracker = CrossCameraTracker(
         max_missed=args.max_missed,
@@ -762,6 +829,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--probe", action="store_true", help="List available camera indexes.")
     parser.add_argument("--probe-max", type=int, default=5, help="Max camera index for --probe.")
     parser.add_argument("--min-area", type=int, default=900, help="Minimum moving contour area.")
+    parser.add_argument(
+        "--target-mode",
+        choices=("general", "pencil"),
+        default="general",
+        help="Detection scoring mode. pencil favors long, narrow moving blobs.",
+    )
+    parser.add_argument(
+        "--single-object",
+        action="store_true",
+        help="Keep only the best detection per camera frame for cleaner demos.",
+    )
+    parser.add_argument("--max-detections", type=int, default=4, help="Max detections per camera frame.")
+    parser.add_argument("--max-area-ratio", type=float, default=0.65, help="Reject boxes larger than this ROI ratio.")
+    parser.add_argument(
+        "--max-shape-ratio",
+        type=float,
+        default=1.0,
+        help="Reject boxes whose short_side/long_side exceeds this value; lower favors thin objects.",
+    )
+    parser.add_argument("--min-long-side", type=int, default=0, help="Reject boxes with long side below this size.")
+    parser.add_argument("--max-short-side", type=int, default=0, help="Reject boxes with short side above this size.")
     parser.add_argument("--warmup-frames", type=int, default=20, help="Frames used to stabilize background.")
     parser.add_argument("--roi-a", type=parse_roi, help="Camera A ROI as x,y,w,h after resize to 640x360.")
     parser.add_argument("--roi-b", type=parse_roi, help="Camera B ROI as x,y,w,h after resize to 640x360.")

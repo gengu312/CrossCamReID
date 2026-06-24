@@ -4,9 +4,15 @@ param(
     [string]$Backend = "dshow",
     [string]$RoiA = "80,80,480,220",
     [string]$RoiB = "80,80,480,220",
-    [int]$WarmupFrames = 45,
-    [int]$MinArea = 5000,
-    [double]$CrossThreshold = 0.72,
+    [int]$WarmupFrames = 30,
+    [int]$MinArea = 900,
+    [double]$CrossThreshold = 0.65,
+    [string]$TargetMode = "pencil",
+    [bool]$SingleObject = $true,
+    [double]$MaxAreaRatio = 0.45,
+    [double]$MaxShapeRatio = 0.75,
+    [int]$MinLongSide = 45,
+    [int]$MaxShortSide = 180,
     [string]$LogDir = "runs",
     [switch]$Headless,
     [int]$Frames = 0,
@@ -62,9 +68,18 @@ if ($Probe) {
         "--roi-b", $RoiB,
         "--warmup-frames", "$WarmupFrames",
         "--min-area", "$MinArea",
+        "--target-mode", $TargetMode,
+        "--max-area-ratio", "$MaxAreaRatio",
+        "--max-shape-ratio", "$MaxShapeRatio",
+        "--min-long-side", "$MinLongSide",
+        "--max-short-side", "$MaxShortSide",
         "--cross-threshold", "$CrossThreshold",
         "--log-dir", $LogDir
     )
+
+    if ($SingleObject) {
+        $AppArgs += "--single-object"
+    }
 }
 
 if ($Headless) {

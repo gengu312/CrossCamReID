@@ -86,7 +86,7 @@ run_crosscam.bat
 它会自动使用当前推荐参数运行：
 
 ```powershell
-python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480,220 --roi-b 80,80,480,220 --warmup-frames 45 --min-area 5000 --cross-threshold 0.72 --log-dir runs
+python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480,220 --roi-b 80,80,480,220 --warmup-frames 30 --min-area 900 --target-mode pencil --single-object --max-area-ratio 0.45 --max-shape-ratio 0.75 --min-long-side 45 --max-short-side 180 --cross-threshold 0.65 --log-dir runs
 ```
 
 也可以在 PowerShell 里使用脚本参数：
@@ -113,6 +113,25 @@ Cam2: matched G001, sim=0.xx
 ```
 
 如果只有大量 `new object`，没有 `matched`，说明只是检测到运动目标，还没有完成跨摄像头同一物体匹配。
+
+当前一键脚本默认使用“铅笔演示模式”：
+
+- 降低 `min-area`，避免细长的笔被过滤掉。
+- 使用 `--target-mode pencil`，优先选择细长运动区域。
+- 使用 `--single-object`，每个摄像头每帧只保留一个最佳目标，减少手和背景产生多个 ID。
+- 使用 `--cross-threshold 0.65`，让两个摄像头光照差异较大时也更容易匹配。
+
+如果误匹配太多，可以提高阈值：
+
+```powershell
+.\run_crosscam.bat -CrossThreshold 0.75
+```
+
+如果仍然检测不到笔，可以继续降低面积阈值：
+
+```powershell
+.\run_crosscam.bat -MinArea 500
+```
 
 ### 1. 无摄像头模拟测试
 
