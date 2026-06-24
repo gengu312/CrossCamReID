@@ -36,6 +36,7 @@ class Detection:
     score: float
     feature: np.ndarray
     crop: np.ndarray
+    target_similarity: Optional[float] = None
 
 
 @dataclass
@@ -49,6 +50,7 @@ class Track:
     last_seen: float
     missed: int = 0
     last_similarity: Optional[float] = None
+    last_target_similarity: Optional[float] = None
     history: Deque[tuple[int, int]] = field(default_factory=lambda: deque(maxlen=24))
 
 
@@ -59,6 +61,38 @@ class LostIdentity:
     feature: np.ndarray
     bbox: tuple[int, int, int, int]
     last_seen: float
+
+
+@dataclass
+class TargetProfile:
+    feature: Optional[np.ndarray] = None
+    samples: int = 0
+    saved_path: Optional[Path] = None
+
+    @property
+    def active(self) -> bool:
+        return self.feature is not None
+
+    def register_from_detection(self, detection: Detection) -> None:
+        self.feature = detection.feature.copy()
+        self.samples = 1
+
+    def register_from_crop(self, crop: np.ndarray) -> None:
+        h, w = crop.shape[:2]
+        self.feature = extract_feature(crop, (w, h), float(w * h))
+        self.samples = 1
+
+    def similarity(self, feature: np.ndarray) -> Optional[float]:
+        if self.feature is None:
+            return None
+        return feature_similarity(self.feature, feature)
+
+    def update_from_detection(self, detection: Detection, alpha: float) -> None:
+        if self.feature is None or alpha <= 0:
+            return
+        alpha = max(0.0, min(1.0, alpha))
+        self.feature = normalize_vector((1.0 - alpha) * self.feature + alpha * detection.feature)
+        self.samples += 1
 
 
 class EventLogger:
@@ -83,11 +117,13 @@ class EventLogger:
                 "global_id",
                 "local_id",
                 "similarity",
+                "target_similarity",
                 "bbox",
                 "message",
             ],
         )
         self._writer.writeheader()
+        self._file.flush()
 
     def write(
         self,
@@ -98,6 +134,7 @@ class EventLogger:
         message: str,
         local_id: Optional[int] = None,
         similarity: Optional[float] = None,
+        target_similarity: Optional[float] = None,
         bbox: Optional[tuple[int, int, int, int]] = None,
     ) -> None:
         if self._writer is None or self._file is None:
@@ -110,6 +147,7 @@ class EventLogger:
                 "global_id": f"G{global_id:03d}",
                 "local_id": "" if local_id is None else local_id,
                 "similarity": "" if similarity is None else f"{similarity:.4f}",
+                "target_similarity": "" if target_similarity is None else f"{target_similarity:.4f}",
                 "bbox": "" if bbox is None else f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
                 "message": message,
             }
@@ -292,6 +330,41 @@ class CrossCameraTracker:
         self.lost: list[LostIdentity] = []
         self.events: Deque[str] = deque(maxlen=12)
         self.event_logger = event_logger
+        self.registered_target_id: Optional[int] = None
+        self.global_seen_cameras: dict[int, set[int]] = {}
+        self.cross_camera_match_observed = False
+
+    def activate_registered_target(self, target_global_id: int = 1) -> None:
+        self.registered_target_id = target_global_id
+        self.next_global_id = max(self.next_global_id, target_global_id + 1)
+        self.next_local_id = [1, 1]
+        self.active = {0: [], 1: []}
+        self.lost = []
+        self.global_seen_cameras = {}
+        self.cross_camera_match_observed = False
+
+    def note_target_registered(
+        self,
+        now: float,
+        camera_id: int,
+        bbox: tuple[int, int, int, int],
+        saved_path: Optional[Path],
+    ) -> None:
+        target_id = self.registered_target_id if self.registered_target_id is not None else 1
+        message = f"Cam{camera_id + 1}: registered target as G{target_id:03d}"
+        if saved_path is not None:
+            message += f" ({saved_path})"
+        self._log(
+            now,
+            "target_registered",
+            camera_id,
+            target_id,
+            message,
+            similarity=1.0,
+            target_similarity=1.0,
+            bbox=bbox,
+        )
+        self._note_seen(target_id, camera_id)
 
     def update(self, camera_id: int, detections: list[Detection], now: float) -> list[Track]:
         tracks = self.active[camera_id]
@@ -326,27 +399,30 @@ class CrossCameraTracker:
         for detection_index, detection in enumerate(detections):
             if detection_index in assigned_detection_indexes:
                 continue
-            global_id, similarity = self._match_lost_identity(detection, now)
+            global_id, similarity, event_type = self._resolve_global_id(detection, now)
             if global_id is None:
                 global_id = self.next_global_id
                 self.next_global_id += 1
+                event_type = "new"
                 self._log(
                     now,
-                    "new",
+                    event_type,
                     camera_id,
                     global_id,
                     f"Cam{camera_id + 1}: new object G{global_id:03d}",
                     similarity=similarity,
+                    target_similarity=detection.target_similarity,
                     bbox=detection.bbox,
                 )
             else:
                 self._log(
                     now,
-                    "matched",
+                    event_type,
                     camera_id,
                     global_id,
-                    f"Cam{camera_id + 1}: matched G{global_id:03d}, sim={similarity:.2f}",
+                    self._matched_message(camera_id, global_id, event_type, similarity, detection.target_similarity),
                     similarity=similarity,
+                    target_similarity=detection.target_similarity,
                     bbox=detection.bbox,
                 )
 
@@ -361,6 +437,7 @@ class CrossCameraTracker:
                 feature=detection.feature,
                 last_seen=now,
                 last_similarity=similarity,
+                last_target_similarity=detection.target_similarity,
             )
             if self.event_logger is not None:
                 self.event_logger.write(
@@ -371,13 +448,48 @@ class CrossCameraTracker:
                     f"Cam{camera_id + 1}: track L{local_id} uses G{global_id:03d}",
                     local_id=local_id,
                     similarity=similarity,
+                    target_similarity=detection.target_similarity,
                     bbox=detection.bbox,
                 )
             track.history.append((int(detection.center[0]), int(detection.center[1])))
             tracks.append(track)
+            self._note_seen(global_id, camera_id)
 
         self._expire_lost(now)
         return list(tracks)
+
+    def _resolve_global_id(
+        self,
+        detection: Detection,
+        now: float,
+    ) -> tuple[Optional[int], Optional[float], str]:
+        if self.registered_target_id is not None and detection.target_similarity is not None:
+            return self.registered_target_id, detection.target_similarity, "target_matched"
+
+        global_id, similarity = self._match_lost_identity(detection, now)
+        if global_id is not None:
+            return global_id, similarity, "matched"
+        return None, None, "new"
+
+    def _matched_message(
+        self,
+        camera_id: int,
+        global_id: int,
+        event_type: str,
+        similarity: Optional[float],
+        target_similarity: Optional[float],
+    ) -> str:
+        if event_type == "target_matched":
+            sim_text = "" if target_similarity is None else f", target_sim={target_similarity:.2f}"
+            return f"Cam{camera_id + 1}: target matched G{global_id:03d}{sim_text}"
+        sim_text = "" if similarity is None else f", sim={similarity:.2f}"
+        return f"Cam{camera_id + 1}: matched G{global_id:03d}{sim_text}"
+
+    def _note_seen(self, global_id: int, camera_id: int) -> None:
+        cameras = self.global_seen_cameras.setdefault(global_id, set())
+        cameras.add(camera_id)
+        if len(cameras) >= 2:
+            self.cross_camera_match_observed = True
 
     def _refresh_track(
         self,
@@ -392,6 +504,7 @@ class CrossCameraTracker:
         track.last_seen = now
         track.missed = 0
         track.last_similarity = similarity
+        track.last_target_similarity = detection.target_similarity
         track.history.append((int(detection.center[0]), int(detection.center[1])))
 
     def _move_to_lost(self, track: Track, now: float) -> None:
@@ -448,6 +561,7 @@ class CrossCameraTracker:
         message: str,
         local_id: Optional[int] = None,
         similarity: Optional[float] = None,
+        target_similarity: Optional[float] = None,
         bbox: Optional[tuple[int, int, int, int]] = None,
     ) -> None:
         self.events.appendleft(f"{time.strftime('%H:%M:%S', time.localtime(now))} {message}")
@@ -460,6 +574,7 @@ class CrossCameraTracker:
                 message,
                 local_id=local_id,
                 similarity=similarity,
+                target_similarity=target_similarity,
                 bbox=bbox,
             )
 
@@ -467,24 +582,59 @@ class CrossCameraTracker:
 def extract_feature(crop: np.ndarray, size: tuple[int, int], area: float) -> np.ndarray:
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     hist = cv2.calcHist([hsv], [0, 1], None, [12, 8], [0, 180, 0, 256])
-    hist = cv2.normalize(hist, hist).flatten()
+    hist = normalize_vector(cv2.normalize(hist, hist).flatten())
+
+    resized_hsv = cv2.resize(hsv, (48, 48), interpolation=cv2.INTER_AREA)
+    layout_parts = []
+    grid = 3
+    cell_h = resized_hsv.shape[0] // grid
+    cell_w = resized_hsv.shape[1] // grid
+    for gy in range(grid):
+        for gx in range(grid):
+            cell = resized_hsv[gy * cell_h : (gy + 1) * cell_h, gx * cell_w : (gx + 1) * cell_w]
+            layout_parts.append(np.mean(cell.reshape(-1, 3), axis=0) / np.array([180.0, 255.0, 255.0]))
+    color_layout = normalize_vector(np.concatenate(layout_parts).astype(np.float32))
+
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    gray = cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    magnitude, angle = cv2.cartToPolar(gx, gy, angleInDegrees=True)
+    angle = np.mod(angle, 180.0)
+    edge_hist, _ = np.histogram(angle, bins=8, range=(0, 180), weights=magnitude)
+    edge_hist = normalize_vector(edge_hist.astype(np.float32))
 
     w, h = size
     aspect = min(w, h) / max(w, h)
     fill_ratio = min(1.0, area / max(1.0, w * h))
+    size_hint = np.array(
+        [
+            min(1.0, max(w, h) / 240.0),
+            min(1.0, min(w, h) / 120.0),
+        ],
+        dtype=np.float32,
+    )
     mean_color = np.mean(hsv.reshape(-1, 3), axis=0) / np.array([180.0, 255.0, 255.0])
 
     feature = np.concatenate(
         [
-            hist.astype(np.float32),
-            np.array([aspect, fill_ratio], dtype=np.float32),
-            mean_color.astype(np.float32),
+            hist.astype(np.float32) * 0.50,
+            color_layout.astype(np.float32) * 0.30,
+            edge_hist.astype(np.float32) * 0.25,
+            np.array([aspect, fill_ratio], dtype=np.float32) * 0.18,
+            size_hint * 0.12,
+            mean_color.astype(np.float32) * 0.15,
         ]
     )
+    return normalize_vector(feature).astype(np.float32)
+
+
+def normalize_vector(feature: np.ndarray) -> np.ndarray:
+    feature = feature.astype(np.float32, copy=False)
     norm = np.linalg.norm(feature)
     if norm > 0:
         feature = feature / norm
-    return feature.astype(np.float32)
+    return feature
 
 
 def feature_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -512,6 +662,85 @@ def detection_score(area: float, width: int, height: int, target_mode: str) -> f
         return area * elongation_bonus * compactness_penalty
 
     return area
+
+
+def apply_target_profile(
+    detections: list[Detection],
+    target_profile: TargetProfile,
+    threshold: float,
+    update_alpha: float,
+) -> list[Detection]:
+    if not target_profile.active:
+        return detections
+
+    accepted: list[Detection] = []
+    for detection in detections:
+        detection.target_similarity = target_profile.similarity(detection.feature)
+        if detection.target_similarity is not None and detection.target_similarity >= threshold:
+            accepted.append(detection)
+
+    accepted.sort(key=lambda item: (item.target_similarity or 0.0, item.score), reverse=True)
+    if accepted:
+        target_profile.update_from_detection(accepted[0], update_alpha)
+    return accepted
+
+
+def save_target_crop(crop: np.ndarray, log_dir: Path, camera_id: int) -> Optional[Path]:
+    target_dir = log_dir / "targets"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-cam{camera_id + 1}-target.jpg"
+    ok = cv2.imwrite(str(path), crop)
+    return path if ok else None
+
+
+def register_target(
+    target_profile: TargetProfile,
+    tracker: CrossCameraTracker,
+    event_logger: EventLogger,
+    crop: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    camera_id: int,
+    log_dir: Path,
+    now: float,
+) -> None:
+    target_profile.register_from_crop(crop)
+    target_profile.saved_path = save_target_crop(crop, log_dir, camera_id)
+    tracker.activate_registered_target(1)
+    tracker.note_target_registered(now, camera_id, bbox, target_profile.saved_path)
+
+
+def register_target_from_detection(
+    target_profile: TargetProfile,
+    tracker: CrossCameraTracker,
+    event_logger: EventLogger,
+    detection: Detection,
+    log_dir: Path,
+    now: float,
+) -> None:
+    target_profile.register_from_detection(detection)
+    target_profile.saved_path = save_target_crop(detection.crop, log_dir, detection.camera_id)
+    tracker.activate_registered_target(1)
+    tracker.note_target_registered(now, detection.camera_id, detection.bbox, target_profile.saved_path)
+
+
+def select_target_from_frame(
+    frame: np.ndarray,
+    camera_id: int,
+) -> Optional[tuple[np.ndarray, tuple[int, int, int, int]]]:
+    window_name = f"Select target - Camera {camera_id + 1}"
+    x, y, w, h = cv2.selectROI(window_name, frame, showCrosshair=True, fromCenter=False)
+    try:
+        cv2.destroyWindow(window_name)
+    except cv2.error:
+        pass
+    if w <= 0 or h <= 0:
+        return None
+    bbox = clamp_roi((int(x), int(y), int(w), int(h)), frame.shape[1], frame.shape[0])
+    cx, cy, cw, ch = bbox
+    crop = frame[cy : cy + ch, cx : cx + cw]
+    if crop.size == 0:
+        return None
+    return crop, bbox
 
 
 def crop_roi(
@@ -575,6 +804,8 @@ def draw_tracks(
         label = f"G{track.global_id:03d} L{track.local_id}"
         if track.last_similarity is not None:
             label += f" s={track.last_similarity:.2f}"
+        if track.last_target_similarity is not None:
+            label += f" t={track.last_target_similarity:.2f}"
         cv2.putText(
             output,
             label,
@@ -710,7 +941,8 @@ def run(args: argparse.Namespace) -> int:
         probe_cameras(args.probe_max, args.backend)
         return 0
 
-    event_logger = EventLogger(not args.no_log, Path(args.log_dir))
+    log_dir = Path(args.log_dir)
+    event_logger = EventLogger(not args.no_log, log_dir)
     sources = open_sources(args)
     detectors = [
         MotionDetector(
@@ -746,6 +978,7 @@ def run(args: argparse.Namespace) -> int:
         cross_threshold=args.cross_threshold,
         event_logger=event_logger,
     )
+    target_profile = TargetProfile()
 
     processed = 0
     matched_seen = False
@@ -763,10 +996,31 @@ def run(args: argparse.Namespace) -> int:
 
             detections_a = detectors[0].detect(frame_a)
             detections_b = detectors[1].detect(frame_b)
+            if args.auto_register_first and not target_profile.active and detections_a:
+                register_target_from_detection(
+                    target_profile,
+                    tracker,
+                    event_logger,
+                    detections_a[0],
+                    log_dir,
+                    now,
+                )
+            detections_a = apply_target_profile(
+                detections_a,
+                target_profile,
+                args.target_threshold,
+                args.target_update_alpha,
+            )
+            detections_b = apply_target_profile(
+                detections_b,
+                target_profile,
+                args.target_threshold,
+                args.target_update_alpha,
+            )
             tracks_a = tracker.update(0, detections_a, now)
             tracks_b = tracker.update(1, detections_b, now)
 
-            if any("matched" in event for event in tracker.events):
+            if tracker.cross_camera_match_observed:
                 matched_seen = True
 
             if not args.headless:
@@ -781,6 +1035,16 @@ def run(args: argparse.Namespace) -> int:
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")):
                     break
+                if key in (ord("r"), ord("1")):
+                    selected = select_target_from_frame(frame_a, 0)
+                    if selected is not None:
+                        crop, bbox = selected
+                        register_target(target_profile, tracker, event_logger, crop, bbox, 0, log_dir, time.time())
+                if key in (ord("t"), ord("2")):
+                    selected = select_target_from_frame(frame_b, 1)
+                    if selected is not None:
+                        crop, bbox = selected
+                        register_target(target_profile, tracker, event_logger, crop, bbox, 1, log_dir, time.time())
 
             processed += 1
             if args.frames > 0 and processed >= args.frames:
@@ -862,6 +1126,23 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.72,
         help="Minimum cross-camera feature similarity.",
+    )
+    parser.add_argument(
+        "--target-threshold",
+        type=float,
+        default=0.58,
+        help="Minimum similarity to the manually registered target template.",
+    )
+    parser.add_argument(
+        "--target-update-alpha",
+        type=float,
+        default=0.04,
+        help="Small feature update rate for accepted target matches; 0 disables adaptation.",
+    )
+    parser.add_argument(
+        "--auto-register-first",
+        action="store_true",
+        help="Register the first Camera A detection as the target; mainly useful for demo/headless tests.",
     )
     parser.add_argument(
         "--require-match",

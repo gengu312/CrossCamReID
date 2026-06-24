@@ -13,11 +13,14 @@ param(
     [double]$MaxShapeRatio = 0.75,
     [int]$MinLongSide = 45,
     [int]$MaxShortSide = 180,
+    [double]$TargetThreshold = 0.58,
+    [double]$TargetUpdateAlpha = 0.04,
     [string]$LogDir = "runs",
     [switch]$Headless,
     [int]$Frames = 0,
     [switch]$Demo,
     [switch]$Probe,
+    [switch]$AutoRegisterFirst,
     [switch]$SkipInstall
 )
 
@@ -58,7 +61,12 @@ $AppArgs = @("src\crosscam_mvp.py")
 if ($Probe) {
     $AppArgs += @("--probe", "--probe-max", "5", "--backend", $Backend)
 } elseif ($Demo) {
-    $AppArgs += @("--demo")
+    $AppArgs += @(
+        "--demo",
+        "--target-threshold", "$TargetThreshold",
+        "--target-update-alpha", "$TargetUpdateAlpha",
+        "--log-dir", $LogDir
+    )
 } else {
     $AppArgs += @(
         "--cam-a", "$CamA",
@@ -74,12 +82,19 @@ if ($Probe) {
         "--min-long-side", "$MinLongSide",
         "--max-short-side", "$MaxShortSide",
         "--cross-threshold", "$CrossThreshold",
+        "--target-threshold", "$TargetThreshold",
+        "--target-update-alpha", "$TargetUpdateAlpha",
         "--log-dir", $LogDir
     )
 
     if ($SingleObject) {
         $AppArgs += "--single-object"
     }
+
+}
+
+if (-not $Probe -and $AutoRegisterFirst) {
+    $AppArgs += "--auto-register-first"
 }
 
 if ($Headless) {

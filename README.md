@@ -13,7 +13,7 @@
 -> 匹配成功后，在摄像头 B 继续使用同一个全局 ID
 ```
 
-当前版本先使用 OpenCV 的传统视觉方法完成闭环，不依赖训练模型，方便快速演示和调试。后续可以把检测模块替换成 YOLO，把重识别模块替换成深度学习 Re-ID 特征。
+当前版本先使用 OpenCV 的传统视觉方法完成闭环，不依赖训练模型。推荐演示方式是先在画面中框选一个具体目标，系统保存它的轻量视觉模板，再在两个摄像头中持续寻找与它相似的候选。后续可以把检测模块替换成 YOLO，把重识别模块替换成深度学习 Re-ID 特征。
 
 ## 技术栈与版本
 
@@ -26,7 +26,7 @@
 - NumPy 2.5.0
 - OpenCV MOG2 背景建模：用于运动目标检测
 - 简单质心/距离匹配：用于单摄像头内短时跟踪
-- HSV 颜色直方图 + 形状比例：用于跨摄像头轻量 Re-ID 匹配
+- HSV 颜色直方图 + 颜色布局 + 边缘方向 + 形状比例：用于跨摄像头轻量 Re-ID 匹配
 
 后续 YOLO 版本会把“运动目标检测”替换为“训练后的铅笔/文具目标检测模型”，但跨摄像头 ID 管理、相似度匹配和可视化框架可以继续复用。
 
@@ -38,6 +38,8 @@
 - 对每个摄像头内的目标做简单跟踪。
 - 为物体生成颜色、形状等轻量视觉指纹。
 - 当目标从一个摄像头消失、另一个摄像头出现时，计算相似度并继承全局 ID。
+- 支持手动框选注册具体目标，注册后只跟踪与目标模板相似的候选。
+- 支持保存注册目标截图到 `runs/targets/`，方便后续整理训练素材。
 - 实时窗口显示两个摄像头画面、检测框、全局 ID、局部 ID、相似度和事件日志。
 - 支持无窗口 headless 验证模式，方便确认程序是否跑通。
 - 支持摄像头后端自动尝试，默认依次尝试 DirectShow、MSMF 和 OpenCV 默认后端。
@@ -86,7 +88,7 @@ run_crosscam.bat
 它会自动使用当前推荐参数运行：
 
 ```powershell
-python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480,220 --roi-b 80,80,480,220 --warmup-frames 30 --min-area 900 --target-mode pencil --single-object --max-area-ratio 0.45 --max-shape-ratio 0.75 --min-long-side 45 --max-short-side 180 --cross-threshold 0.65 --log-dir runs
+python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480,220 --roi-b 80,80,480,220 --warmup-frames 30 --min-area 900 --target-mode pencil --single-object --max-area-ratio 0.45 --max-shape-ratio 0.75 --min-long-side 45 --max-short-side 180 --cross-threshold 0.65 --target-threshold 0.58 --target-update-alpha 0.04 --log-dir runs
 ```
 
 也可以在 PowerShell 里使用脚本参数：
@@ -96,7 +98,17 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480
 .\run_crosscam.bat -Demo
 .\run_crosscam.bat -Headless -Frames 120
 .\run_crosscam.bat -CamA 0 -CamB 2
+.\run_crosscam.bat -Demo -AutoRegisterFirst -Headless -Frames 260
 ```
+
+推荐的真实物体演示流程：
+
+1. 启动 `.\run_crosscam.bat`。
+2. 在左侧摄像头画面中按 `r`，用鼠标框选要追踪的具体物体，按 Enter 确认。
+3. 如果目标先出现在右侧摄像头，按 `t` 从右侧画面框选。
+4. 把同一个物体移动到另一个摄像头区域，观察是否继续显示 `G001`。
+
+注册后日志会额外记录 `target_similarity`。它表示当前候选与已注册目标模板的相似度，越接近 1 越像。
 
 每次运行都会在 `runs/` 目录下生成一个 CSV 事件日志，例如：
 
@@ -107,12 +119,12 @@ runs/20260624-093000-events.csv
 判断是否真的完成跨摄像头识别，重点看日志里有没有同一个全局 ID 的链路：
 
 ```text
-Cam1: new object G001
-Cam1: G001 left view
-Cam2: matched G001, sim=0.xx
+Cam1: registered target as G001
+Cam1: target matched G001, target_sim=1.00
+Cam2: target matched G001, target_sim=0.xx
 ```
 
-如果只有大量 `new object`，没有 `matched`，说明只是检测到运动目标，还没有完成跨摄像头同一物体匹配。
+如果没有注册目标，系统会退回原来的运动目标跨摄像头匹配逻辑。此时如果只有大量 `new object`，没有 `matched`，说明只是检测到运动目标，还没有完成跨摄像头同一物体匹配。
 
 当前一键脚本默认使用“铅笔演示模式”：
 
@@ -120,6 +132,7 @@ Cam2: matched G001, sim=0.xx
 - 使用 `--target-mode pencil`，优先选择细长运动区域。
 - 使用 `--single-object`，每个摄像头每帧只保留一个最佳目标，减少手和背景产生多个 ID。
 - 使用 `--cross-threshold 0.65`，让两个摄像头光照差异较大时也更容易匹配。
+- 使用 `--target-threshold 0.58`，注册目标后过滤掉不像目标的运动候选。
 
 如果误匹配太多，可以提高阈值：
 
@@ -144,21 +157,21 @@ python src\crosscam_mvp.py --demo
 自动跑完并退出：
 
 ```powershell
-python src\crosscam_mvp.py --demo --frames 260 --require-match
+python src\crosscam_mvp.py --demo --auto-register-first --frames 260 --require-match
 ```
 
 无窗口验证：
 
 ```powershell
-python src\crosscam_mvp.py --demo --headless --frames 180 --require-match
+python src\crosscam_mvp.py --demo --auto-register-first --headless --frames 260 --require-match
 ```
 
 如果成功，会看到类似输出：
 
 ```text
-Processed frames: 180
+Processed frames: 260
 Cross-camera match observed: yes
-Cam2: matched G001, sim=0.97
+Cam2: target matched G001, target_sim=0.xx
 ```
 
 ### 2. 探测本机摄像头
@@ -237,16 +250,16 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --warmup-frames 45
    python src\crosscam_mvp.py --cam-a 0 --cam-b 1
    ```
 
-4. 把物体放到摄像头 A 区域内并移动，让系统框选到它。
-5. 把物体移出摄像头 A。
-6. 在 8 秒内把同一个物体放入摄像头 B 区域。
+4. 在摄像头 A 画面中按 `r`，框选要追踪的具体物体，按 Enter 确认。
+5. 移动物体，让系统框选到它。
+6. 把物体移出摄像头 A，再放入摄像头 B 区域。
 7. 观察右侧摄像头是否显示同一个全局 ID，例如 `G001`。
 8. 查看底部事件日志，正常情况下会出现：
 
    ```text
-   Cam1: new object G001
-   Cam1: G001 left view
-   Cam2: matched G001, sim=0.xx
+   Cam1: registered target as G001
+   Cam1: target matched G001, target_sim=1.00
+   Cam2: target matched G001, target_sim=0.xx
    ```
 
 如果没有匹配成功，可以先尝试：
@@ -254,11 +267,11 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --warmup-frames 45
 - 换颜色更明显的物体。
 - 给物体贴一个彩色贴纸。
 - 减少背景运动。
-- 缩短从摄像头 A 到摄像头 B 的转移时间。
-- 调低匹配阈值，例如：
+- 尽量框选紧一点，少包含背景和手。
+- 调低目标模板阈值，例如：
 
   ```powershell
-  python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --cross-threshold 0.65
+  python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --target-threshold 0.50
   ```
 
 ## 当前方案的限制
@@ -271,6 +284,7 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --warmup-frames 45
 - 两个物体外观非常相似时，可能匹配错误。
 - 光照差异大时，颜色特征会变得不稳定。
 - 铅笔这种细长小物体在画面中太小时，检测效果会下降。
+- 注册目标时如果框里包含太多背景或手，后续匹配会变乱。
 - 当前系统只能做概率判断，不能保证完全一样的两个物体 100% 区分。
 
 ## 接下来最应该实现的方案
@@ -282,9 +296,11 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --warmup-frames 45
 - 已完成：增加摄像头后端自动尝试，提升不同 Windows 摄像头驱动下的可用性。
 - 已完成：增加手动 ROI 区域，只检测桌面或指定区域，减少误检。
 - 已完成：增加物理摄像头不可用时的 demo 回退模式，保证演示入口可用。
+- 已完成：增加目标注册模式，先框选具体物体，再跨摄像头匹配同一个目标。
+- 已完成：增强轻量 Re-ID 特征，加入颜色布局和边缘方向。
+- 已完成：增加目标截图保存，方便后续训练 YOLO。
+- 已完成：增加 CSV 日志，记录时间、摄像头、全局 ID、相似度和目标模板相似度。
 - 增加“进入区 / 离开区”判断，让跨摄像头匹配更稳定。
-- 增加目标截图保存，方便后续训练 YOLO。
-- 增加 CSV 日志，记录时间、摄像头、全局 ID、相似度。
 - 增加参数配置文件，不用每次在命令行里写参数。
 
 ### 阶段 2：YOLO 目标检测
