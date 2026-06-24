@@ -723,6 +723,25 @@ def register_target_from_detection(
     tracker.note_target_registered(now, detection.camera_id, detection.bbox, target_profile.saved_path)
 
 
+def register_best_detection(
+    target_profile: TargetProfile,
+    tracker: CrossCameraTracker,
+    event_logger: EventLogger,
+    detections: list[Detection],
+    camera_id: int,
+    log_dir: Path,
+    now: float,
+) -> bool:
+    if not detections:
+        tracker.events.appendleft(
+            f"{time.strftime('%H:%M:%S', time.localtime(now))} "
+            f"Cam{camera_id + 1}: no moving target to register"
+        )
+        return False
+    register_target_from_detection(target_profile, tracker, event_logger, detections[0], log_dir, now)
+    return True
+
+
 def select_target_from_frame(
     frame: np.ndarray,
     camera_id: int,
@@ -823,7 +842,7 @@ def draw_tracks(
 
 
 def draw_event_panel(frame: np.ndarray, events: Iterable[str]) -> np.ndarray:
-    panel_height = 128
+    panel_height = 148
     panel = np.full((panel_height, frame.shape[1], 3), (24, 27, 31), dtype=np.uint8)
     cv2.putText(
         panel,
@@ -835,7 +854,17 @@ def draw_event_panel(frame: np.ndarray, events: Iterable[str]) -> np.ndarray:
         2,
         cv2.LINE_AA,
     )
-    y = 52
+    cv2.putText(
+        panel,
+        "Keys: r/t auto-register target, m/n manual select, q quit",
+        (110, 26),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (165, 180, 195),
+        1,
+        cv2.LINE_AA,
+    )
+    y = 58
     for event in list(events)[:4]:
         cv2.putText(
             panel,
@@ -994,25 +1023,25 @@ def run(args: argparse.Namespace) -> int:
             frame_b = cv2.resize(frame_b, (FRAME_W, FRAME_H))
             now = time.time()
 
-            detections_a = detectors[0].detect(frame_a)
-            detections_b = detectors[1].detect(frame_b)
-            if args.auto_register_first and not target_profile.active and detections_a:
+            raw_detections_a = detectors[0].detect(frame_a)
+            raw_detections_b = detectors[1].detect(frame_b)
+            if args.auto_register_first and not target_profile.active and raw_detections_a:
                 register_target_from_detection(
                     target_profile,
                     tracker,
                     event_logger,
-                    detections_a[0],
+                    raw_detections_a[0],
                     log_dir,
                     now,
                 )
             detections_a = apply_target_profile(
-                detections_a,
+                raw_detections_a,
                 target_profile,
                 args.target_threshold,
                 args.target_update_alpha,
             )
             detections_b = apply_target_profile(
-                detections_b,
+                raw_detections_b,
                 target_profile,
                 args.target_threshold,
                 args.target_update_alpha,
@@ -1036,11 +1065,31 @@ def run(args: argparse.Namespace) -> int:
                 if key in (27, ord("q")):
                     break
                 if key in (ord("r"), ord("1")):
+                    register_best_detection(
+                        target_profile,
+                        tracker,
+                        event_logger,
+                        raw_detections_a,
+                        0,
+                        log_dir,
+                        time.time(),
+                    )
+                if key in (ord("t"), ord("2")):
+                    register_best_detection(
+                        target_profile,
+                        tracker,
+                        event_logger,
+                        raw_detections_b,
+                        1,
+                        log_dir,
+                        time.time(),
+                    )
+                if key in (ord("m"), ord("3")):
                     selected = select_target_from_frame(frame_a, 0)
                     if selected is not None:
                         crop, bbox = selected
                         register_target(target_profile, tracker, event_logger, crop, bbox, 0, log_dir, time.time())
-                if key in (ord("t"), ord("2")):
+                if key in (ord("n"), ord("4")):
                     selected = select_target_from_frame(frame_b, 1)
                     if selected is not None:
                         crop, bbox = selected
