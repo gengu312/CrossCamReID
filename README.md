@@ -86,7 +86,7 @@ run_crosscam.bat
 它会自动使用当前推荐参数运行：
 
 ```powershell
-python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480,220 --roi-b 80,80,480,220 --warmup-frames 45 --min-area 5000 --cross-threshold 0.72
+python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480,220 --roi-b 80,80,480,220 --warmup-frames 45 --min-area 5000 --cross-threshold 0.72 --log-dir runs
 ```
 
 也可以在 PowerShell 里使用脚本参数：
@@ -97,6 +97,22 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480
 .\run_crosscam.bat -Headless -Frames 120
 .\run_crosscam.bat -CamA 0 -CamB 2
 ```
+
+每次运行都会在 `runs/` 目录下生成一个 CSV 事件日志，例如：
+
+```text
+runs/20260624-093000-events.csv
+```
+
+判断是否真的完成跨摄像头识别，重点看日志里有没有同一个全局 ID 的链路：
+
+```text
+Cam1: new object G001
+Cam1: G001 left view
+Cam2: matched G001, sim=0.xx
+```
+
+如果只有大量 `new object`，没有 `matched`，说明只是检测到运动目标，还没有完成跨摄像头同一物体匹配。
 
 ### 1. 无摄像头模拟测试
 

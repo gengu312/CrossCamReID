@@ -7,6 +7,7 @@ param(
     [int]$WarmupFrames = 45,
     [int]$MinArea = 5000,
     [double]$CrossThreshold = 0.72,
+    [string]$LogDir = "runs",
     [switch]$Headless,
     [int]$Frames = 0,
     [switch]$Demo,
@@ -61,7 +62,8 @@ if ($Probe) {
         "--roi-b", $RoiB,
         "--warmup-frames", "$WarmupFrames",
         "--min-area", "$MinArea",
-        "--cross-threshold", "$CrossThreshold"
+        "--cross-threshold", "$CrossThreshold",
+        "--log-dir", $LogDir
     )
 }
 

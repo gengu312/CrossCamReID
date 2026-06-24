@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Deque, Iterable, Optional
 
 import cv2
@@ -56,6 +58,67 @@ class LostIdentity:
     feature: np.ndarray
     bbox: tuple[int, int, int, int]
     last_seen: float
+
+
+class EventLogger:
+    def __init__(self, enabled: bool, log_dir: Path) -> None:
+        self.enabled = enabled
+        self.csv_path: Optional[Path] = None
+        self._file = None
+        self._writer: Optional[csv.DictWriter] = None
+        if not enabled:
+            return
+
+        log_dir.mkdir(parents=True, exist_ok=True)
+        run_name = time.strftime("%Y%m%d-%H%M%S")
+        self.csv_path = log_dir / f"{run_name}-events.csv"
+        self._file = self.csv_path.open("w", newline="", encoding="utf-8-sig")
+        self._writer = csv.DictWriter(
+            self._file,
+            fieldnames=[
+                "time",
+                "event_type",
+                "camera",
+                "global_id",
+                "local_id",
+                "similarity",
+                "bbox",
+                "message",
+            ],
+        )
+        self._writer.writeheader()
+
+    def write(
+        self,
+        now: float,
+        event_type: str,
+        camera_id: int,
+        global_id: int,
+        message: str,
+        local_id: Optional[int] = None,
+        similarity: Optional[float] = None,
+        bbox: Optional[tuple[int, int, int, int]] = None,
+    ) -> None:
+        if self._writer is None or self._file is None:
+            return
+        self._writer.writerow(
+            {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                "event_type": event_type,
+                "camera": camera_id + 1,
+                "global_id": f"G{global_id:03d}",
+                "local_id": "" if local_id is None else local_id,
+                "similarity": "" if similarity is None else f"{similarity:.4f}",
+                "bbox": "" if bbox is None else f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
+                "message": message,
+            }
+        )
+        self._file.flush()
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
 
 
 class SyntheticCamera:
@@ -189,6 +252,7 @@ class CrossCameraTracker:
         max_missed: int = 14,
         lost_ttl: float = 8.0,
         cross_threshold: float = 0.72,
+        event_logger: Optional[EventLogger] = None,
     ) -> None:
         self.match_distance = match_distance
         self.max_missed = max_missed
@@ -199,6 +263,7 @@ class CrossCameraTracker:
         self.active: dict[int, list[Track]] = {0: [], 1: []}
         self.lost: list[LostIdentity] = []
         self.events: Deque[str] = deque(maxlen=12)
+        self.event_logger = event_logger
 
     def update(self, camera_id: int, detections: list[Detection], now: float) -> list[Track]:
         tracks = self.active[camera_id]
@@ -237,11 +302,24 @@ class CrossCameraTracker:
             if global_id is None:
                 global_id = self.next_global_id
                 self.next_global_id += 1
-                self._log(now, f"Cam{camera_id + 1}: new object G{global_id:03d}")
+                self._log(
+                    now,
+                    "new",
+                    camera_id,
+                    global_id,
+                    f"Cam{camera_id + 1}: new object G{global_id:03d}",
+                    similarity=similarity,
+                    bbox=detection.bbox,
+                )
             else:
                 self._log(
                     now,
+                    "matched",
+                    camera_id,
+                    global_id,
                     f"Cam{camera_id + 1}: matched G{global_id:03d}, sim={similarity:.2f}",
+                    similarity=similarity,
+                    bbox=detection.bbox,
                 )
 
             local_id = self.next_local_id[camera_id]
@@ -256,6 +334,17 @@ class CrossCameraTracker:
                 last_seen=now,
                 last_similarity=similarity,
             )
+            if self.event_logger is not None:
+                self.event_logger.write(
+                    now,
+                    "track_created",
+                    camera_id,
+                    global_id,
+                    f"Cam{camera_id + 1}: track L{local_id} uses G{global_id:03d}",
+                    local_id=local_id,
+                    similarity=similarity,
+                    bbox=detection.bbox,
+                )
             track.history.append((int(detection.center[0]), int(detection.center[1])))
             tracks.append(track)
 
@@ -287,7 +376,15 @@ class CrossCameraTracker:
                 last_seen=track.last_seen,
             )
         )
-        self._log(now, f"Cam{track.camera_id + 1}: G{track.global_id:03d} left view")
+        self._log(
+            now,
+            "left",
+            track.camera_id,
+            track.global_id,
+            f"Cam{track.camera_id + 1}: G{track.global_id:03d} left view",
+            local_id=track.local_id,
+            bbox=track.bbox,
+        )
 
     def _match_lost_identity(
         self,
@@ -314,8 +411,29 @@ class CrossCameraTracker:
     def _expire_lost(self, now: float) -> None:
         self.lost = [item for item in self.lost if now - item.last_seen <= self.lost_ttl]
 
-    def _log(self, now: float, message: str) -> None:
+    def _log(
+        self,
+        now: float,
+        event_type: str,
+        camera_id: int,
+        global_id: int,
+        message: str,
+        local_id: Optional[int] = None,
+        similarity: Optional[float] = None,
+        bbox: Optional[tuple[int, int, int, int]] = None,
+    ) -> None:
         self.events.appendleft(f"{time.strftime('%H:%M:%S', time.localtime(now))} {message}")
+        if self.event_logger is not None:
+            self.event_logger.write(
+                now,
+                event_type,
+                camera_id,
+                global_id,
+                message,
+                local_id=local_id,
+                similarity=similarity,
+                bbox=bbox,
+            )
 
 
 def extract_feature(crop: np.ndarray, size: tuple[int, int], area: float) -> np.ndarray:
@@ -549,6 +667,7 @@ def run(args: argparse.Namespace) -> int:
         probe_cameras(args.probe_max, args.backend)
         return 0
 
+    event_logger = EventLogger(not args.no_log, Path(args.log_dir))
     sources = open_sources(args)
     detectors = [
         MotionDetector(0, args.min_area, args.warmup_frames, args.roi_a),
@@ -558,6 +677,7 @@ def run(args: argparse.Namespace) -> int:
         max_missed=args.max_missed,
         lost_ttl=args.lost_ttl,
         cross_threshold=args.cross_threshold,
+        event_logger=event_logger,
     )
 
     processed = 0
@@ -601,11 +721,14 @@ def run(args: argparse.Namespace) -> int:
     finally:
         sources[0].release()
         sources[1].release()
+        event_logger.close()
         if not args.headless:
             cv2.destroyAllWindows()
 
     print(f"Processed frames: {processed}")
     print(f"Cross-camera match observed: {'yes' if matched_seen else 'no'}")
+    if event_logger.csv_path is not None:
+        print(f"Event log: {event_logger.csv_path}")
     if tracker.events:
         print("Recent events:")
         for event in reversed(list(tracker.events)):
@@ -642,6 +765,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-frames", type=int, default=20, help="Frames used to stabilize background.")
     parser.add_argument("--roi-a", type=parse_roi, help="Camera A ROI as x,y,w,h after resize to 640x360.")
     parser.add_argument("--roi-b", type=parse_roi, help="Camera B ROI as x,y,w,h after resize to 640x360.")
+    parser.add_argument("--log-dir", default="runs", help="Directory for per-run CSV event logs.")
+    parser.add_argument("--no-log", action="store_true", help="Disable CSV event logging.")
     parser.add_argument("--max-missed", type=int, default=14, help="Frames before a track becomes lost.")
     parser.add_argument("--lost-ttl", type=float, default=8.0, help="Seconds to keep lost IDs matchable.")
     parser.add_argument(
