@@ -47,6 +47,8 @@ class UiButton:
 class UiState:
     buttons: list[UiButton] = field(default_factory=list)
     pending_action: Optional[str] = None
+    event_scroll_offset: int = 0
+    max_event_scroll: int = 0
 
 
 @dataclass
@@ -350,7 +352,7 @@ class CrossCameraTracker:
         self.next_global_id = 1
         self.active: dict[int, list[Track]] = {0: [], 1: []}
         self.lost: list[LostIdentity] = []
-        self.events: Deque[str] = deque(maxlen=12)
+        self.events: Deque[str] = deque(maxlen=80)
         self.event_logger = event_logger
         self.registered_target_id: Optional[int] = None
         self.global_seen_cameras: dict[int, set[int]] = {}
@@ -467,7 +469,7 @@ class CrossCameraTracker:
                     "track_created",
                     camera_id,
                     global_id,
-                    f"Cam{camera_id + 1}: track L{local_id} uses G{global_id:03d}",
+                    f"摄像头{camera_id + 1}：轨迹 L{local_id} 使用 G{global_id:03d}",
                     local_id=local_id,
                     similarity=similarity,
                     target_similarity=detection.target_similarity,
@@ -914,11 +916,21 @@ def draw_button(panel: np.ndarray, button: UiButton) -> None:
     draw_text(panel, button.label, (x + 14, y + 9), (245, 248, 252), 17)
 
 
-def draw_event_panel(frame: np.ndarray, events: Iterable[str]) -> tuple[np.ndarray, list[UiButton]]:
-    panel_height = 164
+def draw_event_panel(
+    frame: np.ndarray,
+    events: Iterable[str],
+    scroll_offset: int = 0,
+) -> tuple[np.ndarray, list[UiButton], int, int]:
+    panel_height = 300
     panel = np.full((panel_height, frame.shape[1], 3), (24, 27, 31), dtype=np.uint8)
     draw_text(panel, "事件日志", (16, 14), (235, 235, 235), 19)
-    draw_text(panel, "先让目标轻微移动并出现检测框，再点击注册按钮。手动框选会短暂停止画面。", (110, 16), (170, 184, 198), 16)
+    draw_text(
+        panel,
+        "先让目标轻微移动并出现检测框，再点击注册按钮。日志区可用鼠标滚轮翻看。",
+        (110, 16),
+        (170, 184, 198),
+        16,
+    )
 
     buttons = [
         UiButton("注册左侧目标", "register_left", (16, 48, 142, 38), True),
@@ -930,11 +942,37 @@ def draw_event_panel(frame: np.ndarray, events: Iterable[str]) -> tuple[np.ndarr
     for button in buttons:
         draw_button(panel, button)
 
-    y = 112
-    for event in list(events)[:4]:
+    all_events = list(events)
+    visible_count = max(1, (panel_height - 118) // 22)
+    max_scroll = max(0, len(all_events) - visible_count)
+    scroll_offset = max(0, min(scroll_offset, max_scroll))
+    visible_events = all_events[scroll_offset : scroll_offset + visible_count]
+
+    log_x = 16
+    log_y = 104
+    log_w = frame.shape[1] - 32
+    log_h = panel_height - log_y - 14
+    cv2.rectangle(panel, (log_x, log_y), (log_x + log_w, log_y + log_h), (31, 35, 41), -1)
+    cv2.rectangle(panel, (log_x, log_y), (log_x + log_w, log_y + log_h), (65, 72, 82), 1)
+
+    status = f"显示 {len(visible_events)} / {len(all_events)} 条"
+    if max_scroll > 0:
+        status += f"，滚动位置 {scroll_offset + 1}-{scroll_offset + len(visible_events)}"
+    draw_text(panel, status, (frame.shape[1] - 230, 68), (165, 180, 195), 15)
+
+    y = log_y + 12
+    for event in visible_events:
         draw_text(panel, event, (16, y), (210, 220, 230), 15)
         y += 22
-    return np.vstack([frame, panel]), buttons
+    if max_scroll > 0:
+        bar_x = log_x + log_w - 10
+        bar_top = log_y + 4
+        bar_h = log_h - 8
+        thumb_h = max(24, int(bar_h * visible_count / max(visible_count, len(all_events))))
+        thumb_y = bar_top + int((bar_h - thumb_h) * scroll_offset / max(1, max_scroll))
+        cv2.rectangle(panel, (bar_x, bar_top), (bar_x + 4, bar_top + bar_h), (48, 54, 63), -1)
+        cv2.rectangle(panel, (bar_x, thumb_y), (bar_x + 4, thumb_y + thumb_h), (126, 144, 166), -1)
+    return np.vstack([frame, panel]), buttons, max_scroll, visible_count
 
 
 def offset_buttons(buttons: list[UiButton], offset_y: int) -> list[UiButton]:
@@ -958,11 +996,20 @@ def button_at(buttons: list[UiButton], x: int, y: int) -> Optional[UiButton]:
 
 
 def on_mouse(event: int, x: int, y: int, _flags: int, userdata) -> None:
-    if event != cv2.EVENT_LBUTTONDOWN or not isinstance(userdata, UiState):
+    if not isinstance(userdata, UiState):
         return
-    button = button_at(userdata.buttons, x, y)
-    if button is not None:
-        userdata.pending_action = button.action
+    if event == cv2.EVENT_MOUSEWHEEL:
+        delta = cv2.getMouseWheelDelta(_flags)
+        step = -3 if delta > 0 else 3
+        userdata.event_scroll_offset = max(
+            0,
+            min(userdata.event_scroll_offset + step, userdata.max_event_scroll),
+        )
+        return
+    if event == cv2.EVENT_LBUTTONDOWN:
+        button = button_at(userdata.buttons, x, y)
+        if button is not None:
+            userdata.pending_action = button.action
 
 
 def id_color(global_id: int) -> tuple[int, int, int]:
@@ -1149,7 +1196,13 @@ def run(args: argparse.Namespace) -> int:
                     ]
                 )
                 content_height = canvas.shape[0]
-                canvas, buttons = draw_event_panel(canvas, tracker.events)
+                canvas, buttons, max_event_scroll, _visible_events = draw_event_panel(
+                    canvas,
+                    tracker.events,
+                    ui_state.event_scroll_offset,
+                )
+                ui_state.max_event_scroll = max_event_scroll
+                ui_state.event_scroll_offset = min(ui_state.event_scroll_offset, max_event_scroll)
                 ui_state.buttons = offset_buttons(buttons, content_height)
                 cv2.imshow(WINDOW_NAME, canvas)
                 key = cv2.waitKey(1) & 0xFF
