@@ -167,29 +167,64 @@ D:\SoftWare\python\Scripts\yolo.exe detect train model=yolov8n.pt data=datasets/
 runs_yolo/pipe_yolov8n/weights/best.pt
 ```
 
-## 5. 用训练后的模型运行双摄
+## 5. 评估训练后的模型
+
+先不要直接上摄像头实时跑，先离线评估验证集：
+
+```powershell
+.\evaluate_pipe_yolo.bat
+```
+
+它会做两件事：
+
+```text
+1. 运行 YOLO val，输出 precision、recall、mAP 等指标。
+2. 对 datasets/pipe_yolo/images/val/ 保存预测预览图。
+```
+
+输出目录：
+
+```text
+runs_yolo_eval/
+```
+
+重点看预测预览图：堆叠管子是否尽量一根一框，是否把手、桌面、阴影误识别成 `pipe`。
+
+如果只想保存预测预览，不跑指标：
+
+```powershell
+.\evaluate_pipe_yolo.bat -PredictOnly
+```
+
+如果只想跑指标，不保存预测图：
+
+```powershell
+.\evaluate_pipe_yolo.bat -ValOnly
+```
+
+## 6. 用训练后的模型运行双摄
 
 训练完成后，用这个模型切到 YOLO 检测：
 
 ```powershell
-.\run_crosscam.bat -PipeMode -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.25
+.\run_crosscam.bat -PipeMode -YoloConf 0.25
 ```
 
-`-PipeMode` 会自动使用 YOLO、多目标检测和较低的目标匹配阈值，适合堆叠管子场景。窗口中出现多个检测框后，直接点击其中一根管子的框即可注册为要追踪的目标。注册后其他管子仍会显示，系统只把当前最像注册目标的那根当作 `G001` 候选。
+`-PipeMode` 会优先自动加载 `runs_yolo\pipe_yolov8n\weights\best.pt`，并使用 YOLO、多目标检测和较低的目标匹配阈值，适合堆叠管子场景。窗口中出现多个检测框后，直接点击其中一根管子的框即可注册为要追踪的目标。注册后其他管子仍会显示，系统只把当前最像注册目标的那根当作 `G001` 候选。
 
 如果漏检多，可以降低置信度：
 
 ```powershell
-.\run_crosscam.bat -PipeMode -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.15
+.\run_crosscam.bat -PipeMode -YoloConf 0.15
 ```
 
 如果误检多，可以提高置信度：
 
 ```powershell
-.\run_crosscam.bat -PipeMode -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.35
+.\run_crosscam.bat -PipeMode -YoloConf 0.35
 ```
 
-## 6. 第一轮训练后看什么
+## 7. 第一轮训练后看什么
 
 训练完成后先看三件事：
 

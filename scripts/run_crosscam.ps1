@@ -57,6 +57,12 @@ function Find-Python {
 $PythonExe = Find-Python
 
 if ($PipeMode) {
+    $DefaultPipeModel = "runs_yolo\pipe_yolov8n\weights\best.pt"
+    if ($YoloModel -eq "yolov8n.pt" -and (Test-Path $DefaultPipeModel)) {
+        $YoloModel = $DefaultPipeModel
+    } elseif ($YoloModel -eq "yolov8n.pt") {
+        Write-Host "PipeMode warning: trained pipe model was not found at runs_yolo\pipe_yolov8n\weights\best.pt. Using yolov8n.pt for smoke testing only."
+    }
     $Detector = "yolo"
     $TargetMode = "general"
     $SingleObject = $false

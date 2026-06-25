@@ -103,6 +103,14 @@ docs/yolo_training_guide.md
 .\train_pipe_yolo.bat
 ```
 
+训练完成后，先离线评估模型和保存预测预览：
+
+```powershell
+.\evaluate_pipe_yolo.bat
+```
+
+评估输出会保存到 `runs_yolo_eval/`，用于检查验证集图片上每根管子的框是否合理。
+
 本机已验证版本：
 
 ```text
@@ -188,10 +196,10 @@ runs/20260624-093000-events.csv
 如果已经训练好 `pipe` 模型，使用管子多目标模式：
 
 ```powershell
-.\run_crosscam.bat -PipeMode -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt
+.\run_crosscam.bat -PipeMode
 ```
 
-`-PipeMode` 会自动切换到 YOLO、多目标检测，并保留每个摄像头最多 30 个候选框。窗口里可以直接点击某一根管子的检测框，把它注册为要追踪的目标；注册后其他管子仍会显示检测框，但只有当前最像注册目标的那根会尝试续接同一个 `G001`。
+`-PipeMode` 会优先自动加载 `runs_yolo\pipe_yolov8n\weights\best.pt`，切换到 YOLO、多目标检测，并保留每个摄像头最多 30 个候选框。窗口里可以直接点击某一根管子的检测框，把它注册为要追踪的目标；注册后其他管子仍会显示检测框，但只有当前最像注册目标的那根会尝试续接同一个 `G001`。
 
 如果误匹配太多，可以提高阈值：
 
@@ -320,7 +328,7 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo -
 一键脚本也支持：
 
 ```powershell
-.\run_crosscam.bat -PipeMode -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt
+.\run_crosscam.bat -PipeMode
 ```
 
 ## 真实物体测试方法
