@@ -484,7 +484,7 @@ class CrossCameraTracker:
         assigned_detection_indexes: set[int] = set()
         assigned_track_indexes: set[int] = set()
 
-        pairs: list[tuple[float, int, int]] = []
+        pairs: list[tuple[float, int, int, float]] = []
         for track_index, track in enumerate(tracks):
             for detection_index, detection in enumerate(detections):
                 if self.registered_target_id is not None:
@@ -493,16 +493,16 @@ class CrossCameraTracker:
                         continue
                     if not track_is_target and detection.is_target_match:
                         continue
-                dist = euclidean(track.center, detection.center)
-                if dist <= self.match_distance:
-                    pairs.append((dist, track_index, detection_index))
+                match = track_detection_match(track, detection, self.match_distance)
+                if match is not None:
+                    cost, similarity = match
+                    pairs.append((cost, track_index, detection_index, similarity))
 
-        for _, track_index, detection_index in sorted(pairs, key=lambda item: item[0]):
+        for _, track_index, detection_index, similarity in sorted(pairs, key=lambda item: item[0]):
             if track_index in assigned_track_indexes or detection_index in assigned_detection_indexes:
                 continue
             track = tracks[track_index]
             detection = detections[detection_index]
-            similarity = feature_similarity(track.feature, detection.feature)
             self._refresh_track(track, detection, now, similarity)
             assigned_track_indexes.add(track_index)
             assigned_detection_indexes.add(detection_index)
@@ -619,7 +619,7 @@ class CrossCameraTracker:
     ) -> None:
         track.bbox = detection.bbox
         track.center = detection.center
-        track.feature = 0.82 * track.feature + 0.18 * detection.feature
+        track.feature = normalize_vector(0.82 * track.feature + 0.18 * detection.feature)
         track.last_seen = now
         track.missed = 0
         track.last_similarity = similarity
@@ -766,6 +766,41 @@ def feature_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 def euclidean(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    left = max(ax, bx)
+    top = max(ay, by)
+    right = min(ax + aw, bx + bw)
+    bottom = min(ay + ah, by + bh)
+    inter_w = max(0, right - left)
+    inter_h = max(0, bottom - top)
+    intersection = float(inter_w * inter_h)
+    union = float(aw * ah + bw * bh) - intersection
+    if union <= 0:
+        return 0.0
+    return max(0.0, min(1.0, intersection / union))
+
+
+def track_detection_match(
+    track: Track,
+    detection: Detection,
+    match_distance: float,
+) -> Optional[tuple[float, float]]:
+    distance = euclidean(track.center, detection.center)
+    iou = bbox_iou(track.bbox, detection.bbox)
+    similarity = feature_similarity(track.feature, detection.feature)
+
+    if distance > match_distance and iou < 0.03:
+        return None
+    if similarity < 0.20 and iou < 0.12:
+        return None
+
+    distance_cost = min(distance / max(1.0, match_distance), 1.5)
+    cost = 0.55 * distance_cost + 0.30 * (1.0 - iou) + 0.15 * (1.0 - similarity)
+    return cost, similarity
 
 
 def detection_score(area: float, width: int, height: int, target_mode: str) -> float:
