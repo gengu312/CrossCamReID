@@ -175,6 +175,18 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480
 runs/20260624-093000-events.csv
 ```
 
+跑完后可以直接分析最新日志：
+
+```powershell
+.\analyze_run.bat
+```
+
+如果要把“必须观察到注册目标跨摄像头接力”作为验收条件：
+
+```powershell
+.\analyze_run.bat -RequireHandoff
+```
+
 判断是否真的完成跨摄像头识别，重点看日志里有没有同一个全局 ID 的链路：
 
 ```text

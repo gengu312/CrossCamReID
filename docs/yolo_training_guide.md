@@ -224,6 +224,18 @@ runs_yolo_eval/
 .\run_crosscam.bat -PipeMode -YoloConf 0.35
 ```
 
+实时运行结束后，分析最新事件日志：
+
+```powershell
+.\analyze_run.bat
+```
+
+如果要确认这次是否真的完成“注册目标离开原摄像头后，在另一个摄像头接力为同一个 G001”：
+
+```powershell
+.\analyze_run.bat -RequireHandoff
+```
+
 ## 7. 第一轮训练后看什么
 
 训练完成后先看三件事：
