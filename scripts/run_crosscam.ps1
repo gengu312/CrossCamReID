@@ -5,6 +5,8 @@ param(
     [string]$RoiA = "80,80,480,220",
     [string]$RoiB = "80,80,480,220",
     [int]$WarmupFrames = 30,
+    [ValidateSet("motion", "yolo")]
+    [string]$Detector = "motion",
     [int]$MinArea = 900,
     [double]$CrossThreshold = 0.65,
     [string]$TargetMode = "pencil",
@@ -15,6 +17,12 @@ param(
     [int]$MaxShortSide = 180,
     [double]$TargetThreshold = 0.58,
     [double]$TargetUpdateAlpha = 0.04,
+    [string]$YoloModel = "yolov8n.pt",
+    [double]$YoloConf = 0.25,
+    [double]$YoloIou = 0.45,
+    [int]$YoloImgsz = 640,
+    [string]$YoloDevice = "",
+    [string]$YoloClasses = "",
     [string]$LogDir = "runs",
     [switch]$Headless,
     [int]$Frames = 0,
@@ -59,6 +67,16 @@ if (-not $SkipInstall) {
             exit $LASTEXITCODE
         }
     }
+    if ($Detector -eq "yolo") {
+        & $PythonExe -c "import ultralytics" *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "正在安装 YOLO 依赖 ultralytics..."
+            & $PythonExe -m pip install ultralytics
+            if ($LASTEXITCODE -ne 0) {
+                exit $LASTEXITCODE
+            }
+        }
+    }
 }
 
 $AppArgs = @("src\crosscam_mvp.py")
@@ -68,10 +86,21 @@ if ($Probe) {
 } elseif ($Demo) {
     $AppArgs += @(
         "--demo",
+        "--detector", $Detector,
         "--target-threshold", "$TargetThreshold",
         "--target-update-alpha", "$TargetUpdateAlpha",
+        "--yolo-model", $YoloModel,
+        "--yolo-conf", "$YoloConf",
+        "--yolo-iou", "$YoloIou",
+        "--yolo-imgsz", "$YoloImgsz",
         "--log-dir", $LogDir
     )
+    if ($YoloDevice -ne "") {
+        $AppArgs += @("--yolo-device", $YoloDevice)
+    }
+    if ($YoloClasses -ne "") {
+        $AppArgs += @("--yolo-classes", $YoloClasses)
+    }
 } else {
     $AppArgs += @(
         "--cam-a", "$CamA",
@@ -79,6 +108,7 @@ if ($Probe) {
         "--backend", $Backend,
         "--roi-a", $RoiA,
         "--roi-b", $RoiB,
+        "--detector", $Detector,
         "--warmup-frames", "$WarmupFrames",
         "--min-area", "$MinArea",
         "--target-mode", $TargetMode,
@@ -89,8 +119,18 @@ if ($Probe) {
         "--cross-threshold", "$CrossThreshold",
         "--target-threshold", "$TargetThreshold",
         "--target-update-alpha", "$TargetUpdateAlpha",
+        "--yolo-model", $YoloModel,
+        "--yolo-conf", "$YoloConf",
+        "--yolo-iou", "$YoloIou",
+        "--yolo-imgsz", "$YoloImgsz",
         "--log-dir", $LogDir
     )
+    if ($YoloDevice -ne "") {
+        $AppArgs += @("--yolo-device", $YoloDevice)
+    }
+    if ($YoloClasses -ne "") {
+        $AppArgs += @("--yolo-classes", $YoloClasses)
+    }
 
     if ($SingleObject) {
         $AppArgs += "--single-object"

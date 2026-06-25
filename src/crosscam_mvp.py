@@ -335,6 +335,93 @@ class MotionDetector:
         return detections[:limit]
 
 
+class YoloDetector:
+    def __init__(
+        self,
+        camera_id: int,
+        model_path: str,
+        confidence: float = 0.25,
+        iou: float = 0.45,
+        image_size: int = 640,
+        device: str = "",
+        classes: Optional[list[int]] = None,
+        roi: Optional[tuple[int, int, int, int]] = None,
+        single_object: bool = False,
+        max_detections: int = 20,
+    ) -> None:
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise RuntimeError(
+                "YOLO detector requires ultralytics. Install it with: "
+                "python -m pip install ultralytics"
+            ) from exc
+
+        self.camera_id = camera_id
+        self.model_path = model_path
+        self.confidence = confidence
+        self.iou = iou
+        self.image_size = image_size
+        self.device = device
+        self.classes = classes
+        self.roi = roi
+        self.single_object = single_object
+        self.max_detections = max_detections
+        self.model = YOLO(model_path)
+
+    def detect(self, frame: np.ndarray) -> list[Detection]:
+        view, offset_x, offset_y = crop_roi(frame, self.roi)
+        results = self.model.predict(
+            source=view,
+            imgsz=self.image_size,
+            conf=self.confidence,
+            iou=self.iou,
+            device=self.device or None,
+            classes=self.classes,
+            verbose=False,
+        )
+        if not results:
+            return []
+
+        result = results[0]
+        boxes = getattr(result, "boxes", None)
+        if boxes is None or boxes.xyxy is None:
+            return []
+
+        detections: list[Detection] = []
+        xyxy = boxes.xyxy.cpu().numpy()
+        confs = boxes.conf.cpu().numpy() if boxes.conf is not None else np.ones(len(xyxy), dtype=np.float32)
+
+        for box, confidence in zip(xyxy, confs):
+            x1, y1, x2, y2 = box
+            x = max(0, int(round(x1)))
+            y = max(0, int(round(y1)))
+            w = max(1, int(round(x2 - x1)))
+            h = max(1, int(round(y2 - y1)))
+            x, y, w, h = clamp_roi((x, y, w, h), view.shape[1], view.shape[0])
+            crop = view[y : y + h, x : x + w]
+            if crop.size == 0:
+                continue
+
+            bbox = (x + offset_x, y + offset_y, w, h)
+            area = float(w * h)
+            detections.append(
+                Detection(
+                    camera_id=self.camera_id,
+                    bbox=bbox,
+                    center=(bbox[0] + w / 2.0, bbox[1] + h / 2.0),
+                    area=area,
+                    score=float(confidence),
+                    feature=extract_feature(crop, (w, h), area),
+                    crop=crop,
+                )
+            )
+
+        detections.sort(key=lambda item: item.score, reverse=True)
+        limit = 1 if self.single_object else self.max_detections
+        return detections[:limit]
+
+
 class CrossCameraTracker:
     def __init__(
         self,
@@ -1035,6 +1122,16 @@ def parse_roi(value: str) -> tuple[int, int, int, int]:
     return parts[0], parts[1], parts[2], parts[3]
 
 
+def parse_yolo_classes(value: str) -> Optional[list[int]]:
+    if not value:
+        return None
+    try:
+        classes = [int(part.strip()) for part in value.split(",") if part.strip()]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("YOLO classes must be comma-separated class ids, such as 0,1,2.") from exc
+    return classes or None
+
+
 def backend_names(selected: str) -> tuple[str, ...]:
     if selected == "auto":
         return AUTO_BACKENDS
@@ -1082,6 +1179,69 @@ def open_sources(args: argparse.Namespace):
     return cap_a, cap_b
 
 
+def build_detectors(args: argparse.Namespace):
+    if args.detector == "motion":
+        return [
+            MotionDetector(
+                0,
+                args.min_area,
+                args.warmup_frames,
+                args.roi_a,
+                target_mode=args.target_mode,
+                single_object=args.single_object,
+                max_area_ratio=args.max_area_ratio,
+                max_shape_ratio=args.max_shape_ratio,
+                min_long_side=args.min_long_side,
+                max_short_side=args.max_short_side,
+                max_detections=args.max_detections,
+            ),
+            MotionDetector(
+                1,
+                args.min_area,
+                args.warmup_frames,
+                args.roi_b,
+                target_mode=args.target_mode,
+                single_object=args.single_object,
+                max_area_ratio=args.max_area_ratio,
+                max_shape_ratio=args.max_shape_ratio,
+                min_long_side=args.min_long_side,
+                max_short_side=args.max_short_side,
+                max_detections=args.max_detections,
+            ),
+        ]
+
+    if args.detector == "yolo":
+        classes = parse_yolo_classes(args.yolo_classes)
+        return [
+            YoloDetector(
+                0,
+                args.yolo_model,
+                confidence=args.yolo_conf,
+                iou=args.yolo_iou,
+                image_size=args.yolo_imgsz,
+                device=args.yolo_device,
+                classes=classes,
+                roi=args.roi_a,
+                single_object=args.single_object,
+                max_detections=args.max_detections,
+            ),
+            YoloDetector(
+                1,
+                args.yolo_model,
+                confidence=args.yolo_conf,
+                iou=args.yolo_iou,
+                image_size=args.yolo_imgsz,
+                device=args.yolo_device,
+                classes=classes,
+                roi=args.roi_b,
+                single_object=args.single_object,
+                max_detections=args.max_detections,
+            ),
+        ]
+
+    raise ValueError(f"Unsupported detector: {args.detector}")
+
+
 def probe_cameras(max_index: int, backend: str) -> None:
     print("正在探测摄像头索引...")
     for index in range(max_index + 1):
@@ -1105,34 +1265,8 @@ def run(args: argparse.Namespace) -> int:
     log_dir = Path(args.log_dir)
     event_logger = EventLogger(not args.no_log, log_dir)
     sources = open_sources(args)
-    detectors = [
-        MotionDetector(
-            0,
-            args.min_area,
-            args.warmup_frames,
-            args.roi_a,
-            target_mode=args.target_mode,
-            single_object=args.single_object,
-            max_area_ratio=args.max_area_ratio,
-            max_shape_ratio=args.max_shape_ratio,
-            min_long_side=args.min_long_side,
-            max_short_side=args.max_short_side,
-            max_detections=args.max_detections,
-        ),
-        MotionDetector(
-            1,
-            args.min_area,
-            args.warmup_frames,
-            args.roi_b,
-            target_mode=args.target_mode,
-            single_object=args.single_object,
-            max_area_ratio=args.max_area_ratio,
-            max_shape_ratio=args.max_shape_ratio,
-            min_long_side=args.min_long_side,
-            max_short_side=args.max_short_side,
-            max_detections=args.max_detections,
-        ),
-    ]
+    detectors = build_detectors(args)
+    print(f"检测模式：{args.detector}")
     tracker = CrossCameraTracker(
         max_missed=args.max_missed,
         lost_ttl=args.lost_ttl,
@@ -1298,6 +1432,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frames", type=int, default=0, help="Stop after N frames; 0 means manual stop.")
     parser.add_argument("--probe", action="store_true", help="List available camera indexes.")
     parser.add_argument("--probe-max", type=int, default=5, help="Max camera index for --probe.")
+    parser.add_argument(
+        "--detector",
+        choices=("motion", "yolo"),
+        default="motion",
+        help="Detection backend. motion is the current stable MVP; yolo uses an Ultralytics model.",
+    )
     parser.add_argument("--min-area", type=int, default=900, help="Minimum moving contour area.")
     parser.add_argument(
         "--target-mode",
@@ -1323,6 +1463,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-frames", type=int, default=20, help="Frames used to stabilize background.")
     parser.add_argument("--roi-a", type=parse_roi, help="Camera A ROI as x,y,w,h after resize to 640x360.")
     parser.add_argument("--roi-b", type=parse_roi, help="Camera B ROI as x,y,w,h after resize to 640x360.")
+    parser.add_argument(
+        "--yolo-model",
+        default="yolov8n.pt",
+        help="Ultralytics model path/name for --detector yolo. Use a trained pipe/pencil model later.",
+    )
+    parser.add_argument("--yolo-conf", type=float, default=0.25, help="YOLO confidence threshold.")
+    parser.add_argument("--yolo-iou", type=float, default=0.45, help="YOLO NMS IoU threshold.")
+    parser.add_argument("--yolo-imgsz", type=int, default=640, help="YOLO inference image size.")
+    parser.add_argument("--yolo-device", default="", help="YOLO device, such as cpu, 0, or cuda:0. Empty lets Ultralytics choose.")
+    parser.add_argument(
+        "--yolo-classes",
+        default="",
+        help="Optional comma-separated YOLO class ids to keep, for example 0,1. Leave empty for custom pipe models.",
+    )
     parser.add_argument("--log-dir", default="runs", help="Directory for per-run CSV event logs.")
     parser.add_argument("--no-log", action="store_true", help="Disable CSV event logging.")
     parser.add_argument("--max-missed", type=int, default=14, help="Frames before a track becomes lost.")

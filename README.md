@@ -13,11 +13,18 @@
 -> 匹配成功后，在摄像头 B 继续使用同一个全局 ID
 ```
 
-当前版本先使用 OpenCV 的传统视觉方法完成闭环，不依赖训练模型。推荐演示方式是先让目标在画面中产生检测框，再把当前最佳检测注册成具体目标，系统保存它的轻量视觉模板，之后在两个摄像头中持续寻找与它相似的候选。后续可以把检测模块替换成 YOLO，把重识别模块替换成深度学习 Re-ID 特征。
+当前版本支持两种检测入口：
+
+```text
+motion：OpenCV 运动检测，默认稳定演示模式
+yolo：Ultralytics YOLO 检测入口，用于后续接入自训练 pipe 模型
+```
+
+推荐演示方式是先让目标在画面中产生检测框，再把当前最佳检测注册成具体目标，系统保存它的轻量视觉模板，之后在两个摄像头中持续寻找与它相似的候选。最终铁管场景应逐步从 `motion` 切到 `yolo`，再用自采集数据训练 `pipe` 类别模型。
 
 ## 技术栈与版本
 
-当前仓库是 OpenCV MVP 版本，不是 YOLO 训练版。
+当前仓库包含 OpenCV MVP 稳定版，并已预留 YOLO 检测入口。当前还没有训练好的铅笔/铁管模型。
 
 当前技术栈：
 
@@ -26,16 +33,18 @@
 - NumPy 2.5.0
 - Pillow：用于在 OpenCV 窗口中绘制中文 UI 文本
 - OpenCV MOG2 背景建模：用于运动目标检测
+- Ultralytics YOLO：用于后续静止目标检测和自训练模型接入
 - 简单质心/距离匹配：用于单摄像头内短时跟踪
 - HSV 颜色直方图 + 颜色布局 + 边缘方向 + 形状比例：用于跨摄像头轻量 Re-ID 匹配
 
-后续 YOLO 版本会把“运动目标检测”替换为“训练后的铅笔/文具目标检测模型”，但跨摄像头 ID 管理、相似度匹配和可视化框架可以继续复用。
+YOLO 版本会把“运动目标检测”替换为“训练后的铅笔/管状物目标检测模型”，但跨摄像头 ID 管理、相似度匹配和可视化框架继续复用。
 
 ## 当前 MVP 已实现
 
 - 支持两个物理摄像头同时读取。
 - 支持内置模拟双摄像头 demo，没有摄像头也能验证流程。
 - 使用 OpenCV 做运动目标检测。
+- 支持 `--detector yolo` 检测入口，后续可直接加载自训练模型。
 - 对每个摄像头内的目标做简单跟踪。
 - 为物体生成颜色、形状等轻量视觉指纹。
 - 当目标从一个摄像头消失、另一个摄像头出现时，计算相似度并继承全局 ID。
@@ -60,6 +69,12 @@ cd D:\WorkSpace\CrossCamReID
 
 ```powershell
 python -m pip install -r requirements.txt
+```
+
+如果要运行 YOLO 检测入口，再安装：
+
+```powershell
+python -m pip install -r requirements-yolo.txt
 ```
 
 本机已验证版本：
@@ -246,6 +261,34 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --roi-a 60,80,520,220 --roi-b 60,
 python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --warmup-frames 45
 ```
 
+### 5. YOLO 检测入口
+
+当前 YOLO 入口已经接入，但还没有训练好的 `pipe` 模型。预训练 COCO 模型通常不认识铅笔/铁管，所以它主要用于验证代码链路，正式效果需要后续训练。
+
+安装 YOLO 依赖：
+
+```powershell
+python -m pip install -r requirements-yolo.txt
+```
+
+用预训练模型测试入口：
+
+```powershell
+python src\crosscam_mvp.py --demo --detector yolo --yolo-model yolov8n.pt --headless --frames 5
+```
+
+后续有自训练模型后：
+
+```powershell
+python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo --yolo-model runs\train\pipe_yolo\weights\best.pt
+```
+
+一键脚本也支持：
+
+```powershell
+.\run_crosscam.bat -Detector yolo -YoloModel runs\train\pipe_yolo\weights\best.pt
+```
+
 ## 真实物体测试方法
 
 建议先用容易区分的物体，例如黄色铅笔、彩色笔、带贴纸的小物体。
@@ -309,6 +352,7 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --warmup-frames 45
 - 已完成：增加物理摄像头不可用时的 demo 回退模式，保证演示入口可用。
 - 已完成：增加目标注册模式，先注册具体物体，再跨摄像头匹配同一个目标。
 - 已完成：增强轻量 Re-ID 特征，加入颜色布局和边缘方向。
+- 已完成：增加 YOLO 检测入口，后续可直接接入自训练模型。
 - 已完成：增加目标截图保存，方便后续训练 YOLO。
 - 已完成：增加 CSV 日志，记录时间、摄像头、全局 ID、相似度和目标模板相似度。
 - 增加“进入区 / 离开区”判断，让跨摄像头匹配更稳定。
@@ -330,6 +374,8 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --warmup-frames 45
 - 每个摄像头都拍一些样本。
 - 包含不同角度、光照、背景、手持移动状态。
 - 先采集 300 到 800 张图即可做一个小模型。
+
+第一批不用立刻拍 800 张。建议先按 [铅笔模拟铁管的数据采集计划](docs/training_data_plan.md) 拍 100 到 200 张，用 `pipe` 作为类别名训练一个小模型验证流程。
 
 ### 阶段 3：更强的 Re-ID 特征
 

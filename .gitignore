@@ -9,3 +9,4 @@ env/
 camera_snapshots/
 runs/
 runs_test/
+*.pt
