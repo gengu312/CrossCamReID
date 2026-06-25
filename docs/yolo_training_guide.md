@@ -1,0 +1,171 @@
+# YOLO 训练操作说明
+
+本项目把铅笔和真实铁管统一标成 `pipe` 类别。第一阶段先用铅笔模拟铁管，跑通“拍照、标注、训练、接入双摄系统”的完整流程。
+
+## 1. 照片放哪里
+
+原始照片先放到：
+
+```text
+D:\WorkSpace\CrossCamReID\dataset_raw\
+```
+
+建议按场景分目录：
+
+```text
+dataset_raw/
+  cam1_single/
+  cam1_stack/
+  cam1_hand_move/
+  cam2_single/
+  cam2_stack/
+  negative/
+```
+
+`dataset_raw` 只保存原始照片，方便以后重新标注或扩充数据。
+
+真正用于 YOLO 训练的数据放到：
+
+```text
+D:\WorkSpace\CrossCamReID\datasets\pipe_yolo\
+```
+
+训练目录结构已经固定为：
+
+```text
+datasets/pipe_yolo/
+  data.yaml
+  images/
+    train/
+    val/
+  labels/
+    train/
+    val/
+```
+
+## 2. 标注方式
+
+推荐先用 Label Studio、Roboflow、CVAT 或 makesense.ai 标矩形框。第一版只做 YOLO detect，不做分割。
+
+类别名固定写：
+
+```text
+pipe
+```
+
+即使用铅笔模拟，也不要写 `pencil`。这样后面换真实铁管时，代码和模型文件名都不用改。
+
+标注导出格式选择：
+
+```text
+YOLO
+```
+
+导出后每张图片会对应一个同名 `.txt` 标注文件，例如：
+
+```text
+images/train/img_001.jpg
+labels/train/img_001.txt
+```
+
+YOLO 标注文件内容类似：
+
+```text
+0 0.512 0.438 0.220 0.060
+```
+
+其中 `0` 表示 `pipe` 类别。
+
+## 3. 数据怎么分
+
+第一批建议 100 到 200 张。
+
+放入训练集：
+
+```text
+datasets/pipe_yolo/images/train/
+datasets/pipe_yolo/labels/train/
+```
+
+放入验证集：
+
+```text
+datasets/pipe_yolo/images/val/
+datasets/pipe_yolo/labels/val/
+```
+
+比例建议：
+
+```text
+80% train
+20% val
+```
+
+例子：拍 150 张，则大约 120 张放 `train`，30 张放 `val`。
+
+## 4. 开始训练
+
+进入项目目录：
+
+```powershell
+cd D:\WorkSpace\CrossCamReID
+```
+
+确认 YOLO 依赖已经安装：
+
+```powershell
+D:\SoftWare\python\python.exe -m pip install -r requirements-yolo.txt
+```
+
+开始训练：
+
+```powershell
+D:\SoftWare\python\Scripts\yolo.exe detect train model=yolov8n.pt data=datasets/pipe_yolo/data.yaml epochs=80 imgsz=640 batch=8 device=cpu project=runs_yolo name=pipe_yolov8n
+```
+
+如果以后有 NVIDIA 显卡，并且 PyTorch CUDA 环境已经装好，可以把 `device=cpu` 改成：
+
+```text
+device=0
+```
+
+训练完成后，模型通常在：
+
+```text
+runs_yolo/pipe_yolov8n/weights/best.pt
+```
+
+## 5. 用训练后的模型运行双摄
+
+训练完成后，用这个模型切到 YOLO 检测：
+
+```powershell
+.\run_crosscam.bat -Detector yolo -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.25
+```
+
+如果漏检多，可以降低置信度：
+
+```powershell
+.\run_crosscam.bat -Detector yolo -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.15
+```
+
+如果误检多，可以提高置信度：
+
+```powershell
+.\run_crosscam.bat -Detector yolo -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.35
+```
+
+## 6. 第一轮训练后看什么
+
+训练完成后先看三件事：
+
+- 静止铅笔能不能框出来。
+- 堆叠时是一根一根框，还是被框成一大块。
+- 换到另一个摄像头、另一个光照后是否仍能识别。
+
+如果效果不好，不要马上改代码，优先补照片：
+
+- 漏检静止物体：多拍静止堆叠图。
+- 堆叠识别成一坨：多拍密集堆叠并逐根标注。
+- 换摄像头失败：两个摄像头都要拍训练照片。
+- 手或桌面被误识别：增加负样本和误检场景。

@@ -46,6 +46,12 @@ dataset_raw/
 
 第一版先做 YOLO detect，标矩形框即可。
 
+具体训练目录和命令见：
+
+```text
+docs/yolo_training_guide.md
+```
+
 类别名统一用：
 
 ```text

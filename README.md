@@ -77,6 +77,12 @@ python -m pip install -r requirements.txt
 python -m pip install -r requirements-yolo.txt
 ```
 
+训练自定义铅笔/铁管模型前，先看：
+
+```text
+docs/yolo_training_guide.md
+```
+
 本机已验证版本：
 
 ```text

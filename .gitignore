@@ -9,4 +9,12 @@ env/
 camera_snapshots/
 runs/
 runs_test/
+runs_yolo/
+dataset_raw/
+datasets/pipe_yolo/images/**/*
+datasets/pipe_yolo/labels/**/*
+!datasets/pipe_yolo/images/**/
+!datasets/pipe_yolo/labels/**/
+!datasets/pipe_yolo/images/**/.gitkeep
+!datasets/pipe_yolo/labels/**/.gitkeep
 *.pt
