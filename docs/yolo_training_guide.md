@@ -143,7 +143,7 @@ runs_yolo/pipe_yolov8n/weights/best.pt
 .\run_crosscam.bat -PipeMode -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.25
 ```
 
-`-PipeMode` 会自动使用 YOLO、多目标检测和较低的目标匹配阈值，适合堆叠管子场景。窗口中出现多个检测框后，直接点击其中一根管子的框即可注册为要追踪的目标。
+`-PipeMode` 会自动使用 YOLO、多目标检测和较低的目标匹配阈值，适合堆叠管子场景。窗口中出现多个检测框后，直接点击其中一根管子的框即可注册为要追踪的目标。注册后其他管子仍会显示，系统只把当前最像注册目标的那根当作 `G001` 候选。
 
 如果漏检多，可以降低置信度：
 

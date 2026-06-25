@@ -62,6 +62,7 @@ class Detection:
     feature: np.ndarray
     crop: np.ndarray
     target_similarity: Optional[float] = None
+    is_target_match: bool = False
 
 
 @dataclass
@@ -486,6 +487,12 @@ class CrossCameraTracker:
         pairs: list[tuple[float, int, int]] = []
         for track_index, track in enumerate(tracks):
             for detection_index, detection in enumerate(detections):
+                if self.registered_target_id is not None:
+                    track_is_target = track.global_id == self.registered_target_id
+                    if track_is_target and not detection.is_target_match:
+                        continue
+                    if not track_is_target and detection.is_target_match:
+                        continue
                 dist = euclidean(track.center, detection.center)
                 if dist <= self.match_distance:
                     pairs.append((dist, track_index, detection_index))
@@ -575,7 +582,7 @@ class CrossCameraTracker:
         detection: Detection,
         now: float,
     ) -> tuple[Optional[int], Optional[float], str]:
-        if self.registered_target_id is not None and detection.target_similarity is not None:
+        if self.registered_target_id is not None and detection.is_target_match:
             return self.registered_target_id, detection.target_similarity, "target_matched"
 
         global_id, similarity = self._match_lost_identity(detection, now)
@@ -781,6 +788,7 @@ def apply_target_profile(
     target_profile: TargetProfile,
     threshold: float,
     update_alpha: float,
+    keep_all: bool = False,
 ) -> list[Detection]:
     if not target_profile.active:
         return detections
@@ -788,13 +796,21 @@ def apply_target_profile(
     accepted: list[Detection] = []
     for detection in detections:
         detection.target_similarity = target_profile.similarity(detection.feature)
-        if detection.target_similarity is not None and detection.target_similarity >= threshold:
+        detection.is_target_match = detection.target_similarity is not None and detection.target_similarity >= threshold
+        if detection.is_target_match:
             accepted.append(detection)
 
+    if not accepted:
+        return detections if keep_all else []
+
     accepted.sort(key=lambda item: (item.target_similarity or 0.0, item.score), reverse=True)
-    if accepted:
-        target_profile.update_from_detection(accepted[0], update_alpha)
-    return accepted
+    best = accepted[0]
+    for detection in detections:
+        detection.is_target_match = detection is best
+    target_profile.update_from_detection(best, update_alpha)
+    if keep_all:
+        return detections
+    return [best]
 
 
 def save_target_crop(crop: np.ndarray, log_dir: Path, camera_id: int) -> Optional[Path]:
@@ -1326,12 +1342,14 @@ def run(args: argparse.Namespace) -> int:
                 target_profile,
                 args.target_threshold,
                 args.target_update_alpha,
+                args.track_all_after_register,
             )
             detections_b = apply_target_profile(
                 raw_detections_b,
                 target_profile,
                 args.target_threshold,
                 args.target_update_alpha,
+                args.track_all_after_register,
             )
             tracks_a = tracker.update(0, detections_a, now)
             tracks_b = tracker.update(1, detections_b, now)
@@ -1536,6 +1554,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.04,
         help="Small feature update rate for accepted target matches; 0 disables adaptation.",
+    )
+    parser.add_argument(
+        "--track-all-after-register",
+        action="store_true",
+        help="Keep non-target detections visible after registering a target; useful for dense pipe piles.",
     )
     parser.add_argument(
         "--auto-register-first",

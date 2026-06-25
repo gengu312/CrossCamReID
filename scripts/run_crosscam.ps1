@@ -31,6 +31,7 @@ param(
     [switch]$Probe,
     [switch]$AutoRegisterFirst,
     [switch]$PipeMode,
+    [switch]$TrackAllAfterRegister,
     [switch]$SkipInstall
 )
 
@@ -63,6 +64,7 @@ if ($PipeMode) {
     $CrossThreshold = 0.62
     $TargetThreshold = 0.50
     $TargetUpdateAlpha = 0.02
+    $TrackAllAfterRegister = $true
 }
 
 function Write-Utf8Host {
@@ -154,6 +156,10 @@ if ($Probe) {
 
 if (-not $Probe -and $AutoRegisterFirst) {
     $AppArgs += "--auto-register-first"
+}
+
+if (-not $Probe -and $TrackAllAfterRegister) {
+    $AppArgs += "--track-all-after-register"
 }
 
 if ($Headless) {
