@@ -47,6 +47,7 @@ class UiButton:
 class UiState:
     buttons: list[UiButton] = field(default_factory=list)
     pending_action: Optional[str] = None
+    pending_canvas_click: Optional[tuple[int, int]] = None
     event_scroll_offset: int = 0
     max_event_scroll: int = 0
 
@@ -1013,7 +1014,7 @@ def draw_event_panel(
     draw_text(panel, "事件日志", (16, 14), (235, 235, 235), 19)
     draw_text(
         panel,
-        "先让目标轻微移动并出现检测框，再点击注册按钮。日志区可用鼠标滚轮翻看。",
+        "点击画面中的检测框可注册某根管子；也可用按钮注册最佳目标或手动框选。日志区可滚动。",
         (110, 16),
         (170, 184, 198),
         16,
@@ -1082,6 +1083,20 @@ def button_at(buttons: list[UiButton], x: int, y: int) -> Optional[UiButton]:
     return None
 
 
+def detection_at(detections: Iterable[Detection], x: int, y: int) -> Optional[Detection]:
+    candidates: list[tuple[float, float, Detection]] = []
+    for detection in detections:
+        bx, by, bw, bh = detection.bbox
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            area = float(bw * bh)
+            distance = euclidean((float(x), float(y)), detection.center)
+            candidates.append((area, distance, detection))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2]
+
+
 def on_mouse(event: int, x: int, y: int, _flags: int, userdata) -> None:
     if not isinstance(userdata, UiState):
         return
@@ -1097,6 +1112,8 @@ def on_mouse(event: int, x: int, y: int, _flags: int, userdata) -> None:
         button = button_at(userdata.buttons, x, y)
         if button is not None:
             userdata.pending_action = button.action
+            return
+        userdata.pending_canvas_click = (x, y)
 
 
 def id_color(global_id: int) -> tuple[int, int, int]:
@@ -1341,7 +1358,9 @@ def run(args: argparse.Namespace) -> int:
                 cv2.imshow(WINDOW_NAME, canvas)
                 key = cv2.waitKey(1) & 0xFF
                 action = ui_state.pending_action
+                canvas_click = ui_state.pending_canvas_click
                 ui_state.pending_action = None
+                ui_state.pending_canvas_click = None
                 if key in (27, ord("q")):
                     action = "quit"
                 elif key in (ord("r"), ord("1")):
@@ -1385,6 +1404,25 @@ def run(args: argparse.Namespace) -> int:
                     if selected is not None:
                         crop, bbox = selected
                         register_target(target_profile, tracker, event_logger, crop, bbox, 1, log_dir, time.time())
+                if canvas_click is not None and canvas_click[1] < FRAME_H:
+                    click_x, click_y = canvas_click
+                    if click_x < FRAME_W:
+                        clicked_detection = detection_at(raw_detections_a, click_x, click_y)
+                    else:
+                        clicked_detection = detection_at(raw_detections_b, click_x - FRAME_W, click_y)
+                    if clicked_detection is not None:
+                        register_target_from_detection(
+                            target_profile,
+                            tracker,
+                            event_logger,
+                            clicked_detection,
+                            log_dir,
+                            time.time(),
+                        )
+                    else:
+                        tracker.events.appendleft(
+                            f"{time.strftime('%H:%M:%S')} 未点中检测框，请点击目标框内部或使用手动框选"
+                        )
 
             processed += 1
             if args.frames > 0 and processed >= args.frames:

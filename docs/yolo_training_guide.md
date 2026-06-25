@@ -140,19 +140,21 @@ runs_yolo/pipe_yolov8n/weights/best.pt
 训练完成后，用这个模型切到 YOLO 检测：
 
 ```powershell
-.\run_crosscam.bat -Detector yolo -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.25
+.\run_crosscam.bat -PipeMode -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.25
 ```
+
+`-PipeMode` 会自动使用 YOLO、多目标检测和较低的目标匹配阈值，适合堆叠管子场景。窗口中出现多个检测框后，直接点击其中一根管子的框即可注册为要追踪的目标。
 
 如果漏检多，可以降低置信度：
 
 ```powershell
-.\run_crosscam.bat -Detector yolo -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.15
+.\run_crosscam.bat -PipeMode -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.15
 ```
 
 如果误检多，可以提高置信度：
 
 ```powershell
-.\run_crosscam.bat -Detector yolo -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.35
+.\run_crosscam.bat -PipeMode -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt -YoloConf 0.35
 ```
 
 ## 6. 第一轮训练后看什么

@@ -165,6 +165,14 @@ runs/20260624-093000-events.csv
 - 使用 `--cross-threshold 0.65`，让两个摄像头光照差异较大时也更容易匹配。
 - 使用 `--target-threshold 0.58`，注册目标后过滤掉不像目标的运动候选。
 
+如果已经训练好 `pipe` 模型，使用管子多目标模式：
+
+```powershell
+.\run_crosscam.bat -PipeMode -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt
+```
+
+`-PipeMode` 会自动切换到 YOLO、多目标检测，并保留每个摄像头最多 30 个候选框。窗口里可以直接点击某一根管子的检测框，把它注册为要追踪的目标；后续移动到另一个摄像头时，系统会在候选管子里尝试续接同一个 `G001`。
+
 如果误匹配太多，可以提高阈值：
 
 ```powershell
@@ -286,13 +294,13 @@ python src\crosscam_mvp.py --demo --detector yolo --yolo-model yolov8n.pt --head
 后续有自训练模型后：
 
 ```powershell
-python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo --yolo-model runs\train\pipe_yolo\weights\best.pt
+python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo --yolo-model runs_yolo\pipe_yolov8n\weights\best.pt --max-detections 30
 ```
 
 一键脚本也支持：
 
 ```powershell
-.\run_crosscam.bat -Detector yolo -YoloModel runs\train\pipe_yolo\weights\best.pt
+.\run_crosscam.bat -PipeMode -YoloModel runs_yolo\pipe_yolov8n\weights\best.pt
 ```
 
 ## 真实物体测试方法
@@ -310,7 +318,7 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo -
    ```
 
 4. 移动物体，让系统检测到它并显示检测框。
-5. 点击底部“注册左侧目标”，注册当前最佳检测框为要追踪的目标。
+5. 如果是多目标管子模式，直接点击要追踪的那根管子的检测框；普通演示模式可以点击底部“注册左侧目标”。
 6. 把物体移出摄像头 A，再放入摄像头 B 区域。
 7. 观察右侧摄像头是否显示同一个全局 ID，例如 `G001`。
 8. 查看底部事件日志，正常情况下会出现：

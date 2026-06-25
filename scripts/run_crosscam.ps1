@@ -11,6 +11,7 @@ param(
     [double]$CrossThreshold = 0.65,
     [string]$TargetMode = "pencil",
     [bool]$SingleObject = $true,
+    [int]$MaxDetections = 4,
     [double]$MaxAreaRatio = 0.45,
     [double]$MaxShapeRatio = 0.75,
     [int]$MinLongSide = 45,
@@ -29,6 +30,7 @@ param(
     [switch]$Demo,
     [switch]$Probe,
     [switch]$AutoRegisterFirst,
+    [switch]$PipeMode,
     [switch]$SkipInstall
 )
 
@@ -52,6 +54,16 @@ function Find-Python {
 }
 
 $PythonExe = Find-Python
+
+if ($PipeMode) {
+    $Detector = "yolo"
+    $TargetMode = "general"
+    $SingleObject = $false
+    $MaxDetections = [Math]::Max($MaxDetections, 30)
+    $CrossThreshold = 0.62
+    $TargetThreshold = 0.50
+    $TargetUpdateAlpha = 0.02
+}
 
 function Write-Utf8Host {
     param([string]$Base64Text)
@@ -89,6 +101,7 @@ if ($Probe) {
         "--detector", $Detector,
         "--target-threshold", "$TargetThreshold",
         "--target-update-alpha", "$TargetUpdateAlpha",
+        "--max-detections", "$MaxDetections",
         "--yolo-model", $YoloModel,
         "--yolo-conf", "$YoloConf",
         "--yolo-iou", "$YoloIou",
@@ -112,6 +125,7 @@ if ($Probe) {
         "--warmup-frames", "$WarmupFrames",
         "--min-area", "$MinArea",
         "--target-mode", $TargetMode,
+        "--max-detections", "$MaxDetections",
         "--max-area-ratio", "$MaxAreaRatio",
         "--max-shape-ratio", "$MaxShapeRatio",
         "--min-long-side", "$MinLongSide",
