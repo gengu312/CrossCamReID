@@ -19,10 +19,30 @@ dataset_raw/
   cam1_hand_move/
   cam2_single/
   cam2_stack/
+  cam2_hand_move/
   negative/
 ```
 
 `dataset_raw` 只保存原始照片，方便以后重新标注或扩充数据。
+
+项目提供了双摄采集脚本：
+
+```powershell
+.\capture_dataset.bat -Scenario stack
+```
+
+窗口打开后，按 `Space` 或 `B` 同时保存两个摄像头当前画面。也可以按 `1` 只保存左侧，按 `2` 只保存右侧，按 `Q` 或 `Esc` 退出。
+
+场景参数对应保存目录：
+
+```text
+-Scenario single    -> dataset_raw/cam1_single/ 和 dataset_raw/cam2_single/
+-Scenario stack     -> dataset_raw/cam1_stack/ 和 dataset_raw/cam2_stack/
+-Scenario hand_move -> dataset_raw/cam1_hand_move/ 和 dataset_raw/cam2_hand_move/
+-Scenario negative  -> dataset_raw/negative/
+```
+
+最终目标是堆叠铁管，所以第一批照片里 `stack` 应该占最多；`single` 只用于让模型学习基本外形。
 
 真正用于 YOLO 训练的数据放到：
 

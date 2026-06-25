@@ -83,6 +83,14 @@ python -m pip install -r requirements-yolo.txt
 docs/yolo_training_guide.md
 ```
 
+采集训练照片可以双击或运行：
+
+```powershell
+.\capture_dataset.bat -Scenario stack
+```
+
+默认会使用当前机器常用的 `0/2` 双摄，把照片保存到 `dataset_raw/` 下对应场景目录。
+
 本机已验证版本：
 
 ```text

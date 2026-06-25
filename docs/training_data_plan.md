@@ -39,7 +39,30 @@ dataset_raw/
   cam1_hand_move/
   cam2_single/
   cam2_stack/
+  cam2_hand_move/
   negative/
+```
+
+可以直接用项目里的采集脚本拍照：
+
+```powershell
+.\capture_dataset.bat -Scenario stack
+```
+
+窗口打开后：
+
+- 按 `Space` 或 `B`：同时保存两个摄像头当前画面。
+- 按 `1`：只保存左侧摄像头画面。
+- 按 `2`：只保存右侧摄像头画面。
+- 按 `Q` 或 `Esc`：退出采集。
+
+不同场景对应的保存位置：
+
+```text
+-Scenario single    -> dataset_raw/cam1_single/ 和 dataset_raw/cam2_single/
+-Scenario stack     -> dataset_raw/cam1_stack/ 和 dataset_raw/cam2_stack/
+-Scenario hand_move -> dataset_raw/cam1_hand_move/ 和 dataset_raw/cam2_hand_move/
+-Scenario negative  -> dataset_raw/negative/
 ```
 
 ## 标注建议
