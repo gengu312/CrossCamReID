@@ -123,6 +123,28 @@ datasets/pipe_yolo/labels/val/
 
 例子：拍 150 张，则大约 120 张放 `train`，30 张放 `val`。
 
+如果标注工具导出的是一个图片目录和一个标签目录，可以用脚本自动分配：
+
+```powershell
+.\prepare_yolo_dataset.bat -SourceImages exported\images -SourceLabels exported\labels -Clean
+```
+
+参数说明：
+
+```text
+-SourceImages：标注工具导出的图片目录
+-SourceLabels：标注工具导出的 YOLO txt 标签目录
+-Clean：整理前清空旧的 train/val 图片和标签，保留 .gitkeep
+-ValRatio：验证集比例，默认 0.2
+-AllowNegative：允许没有 txt 标签的图片作为负样本，并生成空标签文件
+```
+
+整理完成后再运行：
+
+```powershell
+.\train_pipe_yolo.bat -CheckOnly
+```
+
 ## 4. 开始训练
 
 进入项目目录：

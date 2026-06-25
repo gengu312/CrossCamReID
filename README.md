@@ -97,6 +97,12 @@ docs/yolo_training_guide.md
 .\train_pipe_yolo.bat -CheckOnly
 ```
 
+如果标注工具导出的是单独的图片目录和标签目录，可以先自动整理为 train/val：
+
+```powershell
+.\prepare_yolo_dataset.bat -SourceImages exported\images -SourceLabels exported\labels -Clean
+```
+
 检查通过后再开始训练：
 
 ```powershell
