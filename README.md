@@ -91,6 +91,18 @@ docs/yolo_training_guide.md
 
 默认会使用当前机器常用的 `0/2` 双摄，把照片保存到 `dataset_raw/` 下对应场景目录。
 
+标注并整理到 `datasets/pipe_yolo/` 后，可以先检查数据集：
+
+```powershell
+.\train_pipe_yolo.bat -CheckOnly
+```
+
+检查通过后再开始训练：
+
+```powershell
+.\train_pipe_yolo.bat
+```
+
 本机已验证版本：
 
 ```text

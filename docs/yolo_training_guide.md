@@ -137,7 +137,19 @@ cd D:\WorkSpace\CrossCamReID
 D:\SoftWare\python\python.exe -m pip install -r requirements-yolo.txt
 ```
 
-开始训练：
+训练前先检查图片和标签是否成对、标签格式是否正确：
+
+```powershell
+.\train_pipe_yolo.bat -CheckOnly
+```
+
+检查通过后开始训练：
+
+```powershell
+.\train_pipe_yolo.bat
+```
+
+它内部等价于：
 
 ```powershell
 D:\SoftWare\python\Scripts\yolo.exe detect train model=yolov8n.pt data=datasets/pipe_yolo/data.yaml epochs=80 imgsz=640 batch=8 device=cpu project=runs_yolo name=pipe_yolov8n
@@ -145,8 +157,8 @@ D:\SoftWare\python\Scripts\yolo.exe detect train model=yolov8n.pt data=datasets/
 
 如果以后有 NVIDIA 显卡，并且 PyTorch CUDA 环境已经装好，可以把 `device=cpu` 改成：
 
-```text
-device=0
+```powershell
+.\train_pipe_yolo.bat -Device 0
 ```
 
 训练完成后，模型通常在：
