@@ -69,7 +69,7 @@ if ($PipeMode) {
     $MaxDetections = [Math]::Max($MaxDetections, 30)
     $CrossThreshold = 0.62
     $TargetThreshold = 0.50
-    $TargetUpdateAlpha = 0.02
+    $TargetUpdateAlpha = 0.0
     $TrackAllAfterRegister = $true
 }
 

@@ -444,11 +444,13 @@ class CrossCameraTracker:
         self.events: Deque[str] = deque(maxlen=80)
         self.event_logger = event_logger
         self.registered_target_id: Optional[int] = None
+        self.pending_initial_target_camera: Optional[int] = None
         self.global_seen_cameras: dict[int, set[int]] = {}
         self.cross_camera_match_observed = False
 
     def activate_registered_target(self, target_global_id: int = 1) -> None:
         self.registered_target_id = target_global_id
+        self.pending_initial_target_camera = None
         self.next_global_id = max(self.next_global_id, target_global_id + 1)
         self.next_local_id = [1, 1]
         self.active = {0: [], 1: []}
@@ -464,6 +466,7 @@ class CrossCameraTracker:
         saved_path: Optional[Path],
     ) -> None:
         target_id = self.registered_target_id if self.registered_target_id is not None else 1
+        self.pending_initial_target_camera = camera_id
         message = f"摄像头{camera_id + 1}：已注册目标为 G{target_id:03d}"
         if saved_path is not None:
             message += f" ({saved_path})"
@@ -481,6 +484,7 @@ class CrossCameraTracker:
 
     def update(self, camera_id: int, detections: list[Detection], now: float) -> list[Track]:
         tracks = self.active[camera_id]
+        self._gate_registered_target_claims(detections, now)
         assigned_detection_indexes: set[int] = set()
         assigned_track_indexes: set[int] = set()
 
@@ -582,13 +586,76 @@ class CrossCameraTracker:
         detection: Detection,
         now: float,
     ) -> tuple[Optional[int], Optional[float], str]:
-        if self.registered_target_id is not None and detection.is_target_match:
-            return self.registered_target_id, detection.target_similarity, "target_matched"
+        target_similarity = self._resolve_registered_target(detection, now)
+        if target_similarity is not None:
+            return self.registered_target_id, target_similarity, "target_matched"
 
         global_id, similarity = self._match_lost_identity(detection, now)
         if global_id is not None:
             return global_id, similarity, "matched"
         return None, None, "new"
+
+    def _gate_registered_target_claims(self, detections: list[Detection], now: float) -> None:
+        if self.registered_target_id is None:
+            return
+        for detection in detections:
+            if detection.is_target_match and not self._can_claim_registered_target(detection, now):
+                detection.is_target_match = False
+
+    def _can_claim_registered_target(self, detection: Detection, now: float) -> bool:
+        if self.registered_target_id is None:
+            return False
+        if self.pending_initial_target_camera == detection.camera_id:
+            return True
+        if self._active_registered_target_camera() == detection.camera_id:
+            return True
+        return self._find_lost_registered_target(detection, now) is not None
+
+    def _resolve_registered_target(self, detection: Detection, now: float) -> Optional[float]:
+        if self.registered_target_id is None or not detection.is_target_match:
+            return None
+        if self.pending_initial_target_camera == detection.camera_id:
+            self.pending_initial_target_camera = None
+            return detection.target_similarity
+
+        lost_item, lost_similarity = self._find_lost_registered_target(detection, now) or (None, None)
+        if lost_item is not None:
+            self.lost.remove(lost_item)
+            return detection.target_similarity if detection.target_similarity is not None else lost_similarity
+        return None
+
+    def _active_registered_target_camera(self) -> Optional[int]:
+        if self.registered_target_id is None:
+            return None
+        for camera_tracks in self.active.values():
+            for track in camera_tracks:
+                if track.global_id == self.registered_target_id:
+                    return track.camera_id
+        return None
+
+    def _find_lost_registered_target(
+        self,
+        detection: Detection,
+        now: float,
+    ) -> Optional[tuple[LostIdentity, float]]:
+        if self.registered_target_id is None:
+            return None
+        best_item: Optional[LostIdentity] = None
+        best_score = 0.0
+        for item in self.lost:
+            if item.global_id != self.registered_target_id:
+                continue
+            if item.camera_id == detection.camera_id:
+                continue
+            if now - item.last_seen > self.lost_ttl:
+                continue
+            score = feature_similarity(item.feature, detection.feature)
+            if score > best_score:
+                best_item = item
+                best_score = score
+        if best_item is not None and best_score >= self.cross_threshold:
+            return best_item, best_score
+        return None
 
     def _matched_message(
         self,
@@ -842,7 +909,8 @@ def apply_target_profile(
     best = accepted[0]
     for detection in detections:
         detection.is_target_match = detection is best
-    target_profile.update_from_detection(best, update_alpha)
+    if not keep_all:
+        target_profile.update_from_detection(best, update_alpha)
     if keep_all:
         return detections
     return [best]
