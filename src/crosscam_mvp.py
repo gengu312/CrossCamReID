@@ -350,6 +350,10 @@ class YoloDetector:
         roi: Optional[tuple[int, int, int, int]] = None,
         single_object: bool = False,
         max_detections: int = 20,
+        max_area_ratio: float = 0.65,
+        max_shape_ratio: float = 1.0,
+        min_long_side: int = 0,
+        max_short_side: int = 0,
     ) -> None:
         try:
             from ultralytics import YOLO
@@ -369,6 +373,10 @@ class YoloDetector:
         self.roi = roi
         self.single_object = single_object
         self.max_detections = max_detections
+        self.max_area_ratio = max_area_ratio
+        self.max_shape_ratio = max_shape_ratio
+        self.min_long_side = min_long_side
+        self.max_short_side = max_short_side
         self.model = YOLO(model_path)
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
@@ -401,12 +409,24 @@ class YoloDetector:
             w = max(1, int(round(x2 - x1)))
             h = max(1, int(round(y2 - y1)))
             x, y, w, h = clamp_roi((x, y, w, h), view.shape[1], view.shape[0])
+            bbox_area = w * h
+            if bbox_area > view.shape[0] * view.shape[1] * self.max_area_ratio:
+                continue
+            long_side = max(w, h)
+            short_side = min(w, h)
+            shape_ratio = short_side / max(1, long_side)
+            if self.min_long_side > 0 and long_side < self.min_long_side:
+                continue
+            if self.max_short_side > 0 and short_side > self.max_short_side:
+                continue
+            if self.max_shape_ratio < 1.0 and shape_ratio > self.max_shape_ratio:
+                continue
             crop = view[y : y + h, x : x + w]
             if crop.size == 0:
                 continue
 
             bbox = (x + offset_x, y + offset_y, w, h)
-            area = float(w * h)
+            area = float(bbox_area)
             detections.append(
                 Detection(
                     camera_id=self.camera_id,
@@ -1360,6 +1380,10 @@ def build_detectors(args: argparse.Namespace):
                 roi=args.roi_a,
                 single_object=args.single_object,
                 max_detections=args.max_detections,
+                max_area_ratio=args.max_area_ratio,
+                max_shape_ratio=args.max_shape_ratio,
+                min_long_side=args.min_long_side,
+                max_short_side=args.max_short_side,
             ),
             YoloDetector(
                 1,
@@ -1372,6 +1396,10 @@ def build_detectors(args: argparse.Namespace):
                 roi=args.roi_b,
                 single_object=args.single_object,
                 max_detections=args.max_detections,
+                max_area_ratio=args.max_area_ratio,
+                max_shape_ratio=args.max_shape_ratio,
+                min_long_side=args.min_long_side,
+                max_short_side=args.max_short_side,
             ),
         ]
 
