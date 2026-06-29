@@ -24,6 +24,7 @@ param(
     [int]$YoloImgsz = 640,
     [string]$YoloDevice = "",
     [string]$YoloClasses = "",
+    [double]$PredictionHorizon = 0.35,
     [string]$LogDir = "runs",
     [switch]$Headless,
     [int]$Frames = 0,
@@ -114,6 +115,7 @@ if ($Probe) {
         "--yolo-conf", "$YoloConf",
         "--yolo-iou", "$YoloIou",
         "--yolo-imgsz", "$YoloImgsz",
+        "--prediction-horizon", "$PredictionHorizon",
         "--log-dir", $LogDir
     )
     if ($YoloDevice -ne "") {
@@ -145,6 +147,7 @@ if ($Probe) {
         "--yolo-conf", "$YoloConf",
         "--yolo-iou", "$YoloIou",
         "--yolo-imgsz", "$YoloImgsz",
+        "--prediction-horizon", "$PredictionHorizon",
         "--log-dir", $LogDir
     )
     if ($YoloDevice -ne "") {

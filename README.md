@@ -438,7 +438,7 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo -
 
 处理方法：
 
-- 在当前轻量 tracker 上加入运动预测，短暂遮挡时继续沿原方向寻找。
+- 已在当前轻量 tracker 上加入短时运动预测，短暂遮挡或临时丢框时继续沿原方向寻找。
 - 后续可接入 ByteTrack、BoT-SORT 或 DeepSORT。
 - 通过日志统计 ID 切换次数，而不是只靠肉眼判断。
 

@@ -74,6 +74,7 @@ class Track:
     center: tuple[float, float]
     feature: np.ndarray
     last_seen: float
+    velocity: tuple[float, float] = (0.0, 0.0)
     missed: int = 0
     last_similarity: Optional[float] = None
     last_target_similarity: Optional[float] = None
@@ -451,12 +452,14 @@ class CrossCameraTracker:
         max_missed: int = 14,
         lost_ttl: float = 8.0,
         cross_threshold: float = 0.72,
+        prediction_horizon: float = 0.35,
         event_logger: Optional[EventLogger] = None,
     ) -> None:
         self.match_distance = match_distance
         self.max_missed = max_missed
         self.lost_ttl = lost_ttl
         self.cross_threshold = cross_threshold
+        self.prediction_horizon = max(0.0, prediction_horizon)
         self.next_local_id = [1, 1]
         self.next_global_id = 1
         self.active: dict[int, list[Track]] = {0: [], 1: []}
@@ -517,7 +520,7 @@ class CrossCameraTracker:
                         continue
                     if not track_is_target and detection.is_target_match:
                         continue
-                match = track_detection_match(track, detection, self.match_distance)
+                match = track_detection_match(track, detection, self.match_distance, now, self.prediction_horizon)
                 if match is not None:
                     cost, similarity = match
                     pairs.append((cost, track_index, detection_index, similarity))
@@ -704,6 +707,15 @@ class CrossCameraTracker:
         now: float,
         similarity: float,
     ) -> None:
+        dt = max(1.0 / 60.0, min(now - track.last_seen, 1.0))
+        observed_velocity = (
+            (detection.center[0] - track.center[0]) / dt,
+            (detection.center[1] - track.center[1]) / dt,
+        )
+        track.velocity = (
+            0.65 * track.velocity[0] + 0.35 * observed_velocity[0],
+            0.65 * track.velocity[1] + 0.35 * observed_velocity[1],
+        )
         track.bbox = detection.bbox
         track.center = detection.center
         track.feature = normalize_vector(0.82 * track.feature + 0.18 * detection.feature)
@@ -875,8 +887,11 @@ def track_detection_match(
     track: Track,
     detection: Detection,
     match_distance: float,
+    now: float,
+    prediction_horizon: float,
 ) -> Optional[tuple[float, float]]:
-    distance = euclidean(track.center, detection.center)
+    predicted_center = predict_track_center(track, now, prediction_horizon)
+    distance = euclidean(predicted_center, detection.center)
     iou = bbox_iou(track.bbox, detection.bbox)
     similarity = feature_similarity(track.feature, detection.feature)
 
@@ -888,6 +903,14 @@ def track_detection_match(
     distance_cost = min(distance / max(1.0, match_distance), 1.5)
     cost = 0.55 * distance_cost + 0.30 * (1.0 - iou) + 0.15 * (1.0 - similarity)
     return cost, similarity
+
+
+def predict_track_center(track: Track, now: float, horizon: float) -> tuple[float, float]:
+    age = min(max(0.0, now - track.last_seen), max(0.0, horizon))
+    return (
+        track.center[0] + track.velocity[0] * age,
+        track.center[1] + track.velocity[1] * age,
+    )
 
 
 def detection_score(area: float, width: int, height: int, target_mode: str) -> float:
@@ -1435,6 +1458,7 @@ def run(args: argparse.Namespace) -> int:
         max_missed=args.max_missed,
         lost_ttl=args.lost_ttl,
         cross_threshold=args.cross_threshold,
+        prediction_horizon=args.prediction_horizon,
         event_logger=event_logger,
     )
     target_profile = TargetProfile()
@@ -1668,6 +1692,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-log", action="store_true", help="Disable CSV event logging.")
     parser.add_argument("--max-missed", type=int, default=14, help="Frames before a track becomes lost.")
     parser.add_argument("--lost-ttl", type=float, default=8.0, help="Seconds to keep lost IDs matchable.")
+    parser.add_argument(
+        "--prediction-horizon",
+        type=float,
+        default=0.35,
+        help="Seconds of short-term motion prediction for single-camera tracking.",
+    )
     parser.add_argument(
         "--cross-threshold",
         type=float,
