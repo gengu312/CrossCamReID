@@ -197,20 +197,34 @@ runs_yolo/pipe_yolov8n/weights/best.pt
 .\evaluate_pipe_yolo.bat
 ```
 
-它会做两件事：
+它会做三件事：
 
 ```text
 1. 运行 YOLO val，输出 precision、recall、mAP 等指标。
-2. 对 datasets/pipe_yolo/images/val/ 保存预测预览图。
+2. 对 datasets/pipe_yolo/images/val/ 保存预测预览图和预测标签。
+3. 对预测标签和人工标注做 IoU 匹配分析，统计漏检、误检、框偏大。
 ```
 
 输出目录：
 
 ```text
 runs_yolo_eval/
+runs_yolo_eval/pipe_yolov8n_eval_predict/analysis.csv
 ```
 
-重点看预测预览图：堆叠管子是否尽量一根一框，是否把手、桌面、阴影误识别成 `pipe`。
+先看终端输出和 `analysis.csv`：
+
+- `漏检数` 高：说明有些管子没有被框出来，需要补拍这类场景。
+- `误检数` 高：说明手、桌面、阴影或背景容易被识别成管子，需要补负样本。
+- `框偏大匹配数` 高：说明模型能找到目标，但框得太松，标注时要更贴边。
+
+然后再看预测预览图：堆叠管子是否尽量一根一框，是否把手、桌面、阴影误识别成 `pipe`。
+
+如果已经有预测标签，只想重新分析检测质量：
+
+```powershell
+.\analyze_yolo_eval.bat
+```
 
 如果只想保存预测预览，不跑指标：
 

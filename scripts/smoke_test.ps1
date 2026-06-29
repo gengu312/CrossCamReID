@@ -54,6 +54,7 @@ Invoke-Step "Python compile" {
         src\prepare_yolo_dataset.py `
         src\validate_yolo_dataset.py `
         src\analyze_run_log.py `
+        src\analyze_yolo_eval.py `
         src\realsense_depth_probe.py
 }
 
@@ -86,6 +87,22 @@ Invoke-Step "Prepare train/val dataset" {
 
 Invoke-Step "Validate prepared dataset" {
     & $PythonExe src\validate_yolo_dataset.py --dataset-root $DatasetRoot
+}
+
+Invoke-Step "Analyze sample YOLO predictions" {
+    $PredLabelRoot = Join-Path $SmokeRoot "pred_labels"
+    New-Item -ItemType Directory -Force -Path $PredLabelRoot | Out-Null
+    Copy-Item -Path (Join-Path $DatasetRoot "labels\val\*.txt") -Destination $PredLabelRoot -Force
+    & $PythonExe src\analyze_yolo_eval.py `
+        --dataset-root $DatasetRoot `
+        --split val `
+        --pred-labels $PredLabelRoot `
+        --report-csv (Join-Path $SmokeRoot "yolo_eval_analysis.csv") `
+        --require-predictions `
+        --min-precision 1.0 `
+        --min-recall 1.0 `
+        --max-false-positives 0 `
+        --max-false-negatives 0
 }
 
 Invoke-Step "Synthetic cross-camera handoff demo" {

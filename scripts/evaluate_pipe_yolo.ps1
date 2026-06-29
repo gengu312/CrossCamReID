@@ -1,6 +1,9 @@
 param(
     [string]$Model = "runs_yolo\pipe_yolov8n\weights\best.pt",
     [string]$Data = "datasets/pipe_yolo/data.yaml",
+    [string]$DatasetRoot = "datasets/pipe_yolo",
+    [ValidateSet("train", "val")]
+    [string]$Split = "val",
     [string]$Source = "datasets/pipe_yolo/images/val",
     [double]$Conf = 0.25,
     [int]$Imgsz = 640,
@@ -9,6 +12,7 @@ param(
     [string]$Name = "pipe_yolov8n_eval",
     [switch]$ValOnly,
     [switch]$PredictOnly,
+    [switch]$SkipAnalyze,
     [switch]$SkipInstall,
     [switch]$PrintOnly
 )
@@ -79,6 +83,7 @@ $ValArgs = @(
     "name=$Name"
 )
 
+$PredictName = "$($Name)_predict"
 $PredictArgs = @(
     "detect",
     "predict",
@@ -88,8 +93,19 @@ $PredictArgs = @(
     "imgsz=$Imgsz",
     "device=$Device",
     "project=$Project",
-    "name=$($Name)_predict",
-    "save=True"
+    "name=$PredictName",
+    "exist_ok=True",
+    "save=True",
+    "save_txt=True",
+    "save_conf=True"
+)
+
+$AnalyzeArgs = @(
+    "src\analyze_yolo_eval.py",
+    "--dataset-root", $DatasetRoot,
+    "--split", $Split,
+    "--pred-labels", (Join-Path (Join-Path $Project $PredictName) "labels"),
+    "--report-csv", (Join-Path (Join-Path $Project $PredictName) "analysis.csv")
 )
 
 $RunVal = -not $PredictOnly
@@ -101,6 +117,9 @@ if ($PrintOnly) {
     }
     if ($RunPredict) {
         Write-Host ($YoloExe + " " + ($PredictArgs -join " "))
+        if (-not $SkipAnalyze) {
+            Write-Host ($PythonExe + " " + ($AnalyzeArgs -join " "))
+        }
     }
     exit 0
 }
@@ -129,7 +148,16 @@ if ($RunPredict) {
     Write-Host "Saving prediction previews..."
     Write-Host ($YoloExe + " " + ($PredictArgs -join " "))
     & $YoloExe @PredictArgs
-    exit $LASTEXITCODE
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+
+    if (-not $SkipAnalyze) {
+        Write-Host "Analyzing prediction labels..."
+        Write-Host ($PythonExe + " " + ($AnalyzeArgs -join " "))
+        & $PythonExe @AnalyzeArgs
+        exit $LASTEXITCODE
+    }
 }
 
 exit 0

@@ -23,6 +23,7 @@ YOLO 管状物检测
 - 支持 YOLO 检测静止目标，不再只依赖运动检测。
 - 支持点击检测框注册要追踪的目标。
 - 本阶段已让 YOLO 检测复用管状物几何过滤参数，过滤过大、过短、过粗的误检框。
+- 已增加 YOLO 验证集预测分析，自动统计漏检、误检、框偏大和 Precision/Recall。
 
 继续要做：
 
@@ -35,6 +36,7 @@ YOLO 管状物检测
 ```powershell
 .\run_crosscam.bat -CamA 1 -CamB 2 -Backend dshow -PipeMode
 .\evaluate_pipe_yolo.bat
+.\analyze_yolo_eval.bat
 ```
 
 ## 阶段 2：增强单摄像头内多目标追踪

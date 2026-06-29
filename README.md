@@ -115,7 +115,13 @@ docs/yolo_training_guide.md
 .\evaluate_pipe_yolo.bat
 ```
 
-评估输出会保存到 `runs_yolo_eval/`，用于检查验证集图片上每根管子的框是否合理。
+评估输出会保存到 `runs_yolo_eval/`，包括验证指标、预测预览图、预测标签和 `analysis.csv`。其中 `analysis.csv` 会统计每张验证图的匹配数、漏检数、误检数和框偏大数量，方便判断模型主要差在哪里。
+
+如果已经有预测标签，只想重新分析检测质量：
+
+```powershell
+.\analyze_yolo_eval.bat
+```
 
 本机已验证版本：
 
