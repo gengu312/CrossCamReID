@@ -95,24 +95,26 @@ class TargetProfile:
     feature: Optional[np.ndarray] = None
     samples: int = 0
     saved_path: Optional[Path] = None
+    max_templates: int = 6
+    templates: list[np.ndarray] = field(default_factory=list)
 
     @property
     def active(self) -> bool:
         return self.feature is not None
 
     def register_from_detection(self, detection: Detection) -> None:
-        self.feature = detection.feature.copy()
-        self.samples = 1
+        self._reset(detection.feature)
 
     def register_from_crop(self, crop: np.ndarray) -> None:
         h, w = crop.shape[:2]
-        self.feature = extract_feature(crop, (w, h), float(w * h))
-        self.samples = 1
+        self._reset(extract_feature(crop, (w, h), float(w * h)))
 
     def similarity(self, feature: np.ndarray) -> Optional[float]:
         if self.feature is None:
             return None
-        return feature_similarity(self.feature, feature)
+        scores = [feature_similarity(self.feature, feature)]
+        scores.extend(feature_similarity(template, feature) for template in self.templates)
+        return max(scores)
 
     def update_from_detection(self, detection: Detection, alpha: float) -> None:
         if self.feature is None or alpha <= 0:
@@ -120,6 +122,20 @@ class TargetProfile:
         alpha = max(0.0, min(1.0, alpha))
         self.feature = normalize_vector((1.0 - alpha) * self.feature + alpha * detection.feature)
         self.samples += 1
+        self._append_template(detection.feature)
+
+    def _reset(self, feature: np.ndarray) -> None:
+        self.feature = feature.copy()
+        self.samples = 1
+        self.templates = [self.feature.copy()]
+
+    def _append_template(self, feature: np.ndarray) -> None:
+        if self.max_templates <= 1:
+            self.templates = [self.templates[0]] if self.templates else []
+            return
+        self.templates.append(feature.copy())
+        if len(self.templates) > self.max_templates:
+            self.templates = [self.templates[0], *self.templates[-(self.max_templates - 1) :]]
 
 
 class EventLogger:
@@ -1461,7 +1477,7 @@ def run(args: argparse.Namespace) -> int:
         prediction_horizon=args.prediction_horizon,
         event_logger=event_logger,
     )
-    target_profile = TargetProfile()
+    target_profile = TargetProfile(max_templates=args.target_template_limit)
     ui_state = UiState()
     if not args.headless:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -1715,6 +1731,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.04,
         help="Small feature update rate for accepted target matches; 0 disables adaptation.",
+    )
+    parser.add_argument(
+        "--target-template-limit",
+        type=int,
+        default=6,
+        help="Max reliable templates kept for the registered target.",
     )
     parser.add_argument(
         "--track-all-after-register",
