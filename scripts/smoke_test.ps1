@@ -115,6 +115,19 @@ Invoke-Step "Synthetic cross-camera handoff demo" {
         --log-dir $RunLogDir
 }
 
+Invoke-Step "Verify target sample index" {
+    $TargetSampleCsv = Join-Path $RunLogDir "targets\target_samples.csv"
+    if (-not (Test-Path $TargetSampleCsv)) {
+        Write-Host "Missing target sample index: $TargetSampleCsv"
+        exit 2
+    }
+    $SampleLines = Get-Content $TargetSampleCsv
+    if ($SampleLines.Count -lt 2) {
+        Write-Host "Target sample index has no sample rows: $TargetSampleCsv"
+        exit 2
+    }
+}
+
 Invoke-Step "Analyze handoff log" {
     & $PythonExe src\analyze_run_log.py `
         --log-dir $RunLogDir `

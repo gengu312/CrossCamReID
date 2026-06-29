@@ -463,6 +463,7 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo -
 处理方法：
 
 - 当前先使用颜色、边缘、纹理、形状等轻量特征做相似度，并保留注册目标的少量可靠模板。
+- 注册目标和可靠匹配目标会保存裁剪样本到 `runs/targets/`，索引文件是 `runs/targets/target_samples.csv`。
 - 后续可以接入 ResNet、CLIP、DINOv2 这类图像特征。
 - 对注册目标保存多张模板，覆盖正面、侧面、手拿取、光照变化。
 

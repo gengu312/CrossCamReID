@@ -97,6 +97,8 @@ class TargetProfile:
     saved_path: Optional[Path] = None
     max_templates: int = 6
     templates: list[np.ndarray] = field(default_factory=list)
+    saved_sample_count: int = 0
+    last_sample_saved_at: float = 0.0
 
     @property
     def active(self) -> bool:
@@ -128,6 +130,8 @@ class TargetProfile:
         self.feature = feature.copy()
         self.samples = 1
         self.templates = [self.feature.copy()]
+        self.saved_sample_count = 0
+        self.last_sample_saved_at = 0.0
 
     def _append_template(self, feature: np.ndarray) -> None:
         if self.max_templates <= 1:
@@ -136,6 +140,26 @@ class TargetProfile:
         self.templates.append(feature.copy())
         if len(self.templates) > self.max_templates:
             self.templates = [self.templates[0], *self.templates[-(self.max_templates - 1) :]]
+
+    def can_save_sample(
+        self,
+        now: float,
+        similarity: Optional[float],
+        min_similarity: float,
+        min_interval: float,
+        max_samples: int,
+    ) -> bool:
+        if max_samples <= 0 or self.saved_sample_count >= max_samples:
+            return False
+        if similarity is not None and similarity < min_similarity:
+            return False
+        if self.saved_sample_count > 0 and now - self.last_sample_saved_at < min_interval:
+            return False
+        return True
+
+    def note_sample_saved(self, now: float) -> None:
+        self.saved_sample_count += 1
+        self.last_sample_saved_at = now
 
 
 class EventLogger:
@@ -975,6 +999,11 @@ def apply_target_profile(
     threshold: float,
     update_alpha: float,
     keep_all: bool = False,
+    log_dir: Optional[Path] = None,
+    now: Optional[float] = None,
+    sample_min_similarity: float = 0.72,
+    sample_min_interval: float = 0.8,
+    sample_max_count: int = 12,
 ) -> list[Detection]:
     if not target_profile.active:
         return detections
@@ -995,17 +1024,70 @@ def apply_target_profile(
         detection.is_target_match = detection is best
     if not keep_all:
         target_profile.update_from_detection(best, update_alpha)
+    if (
+        log_dir is not None
+        and now is not None
+        and target_profile.can_save_sample(
+            now,
+            best.target_similarity,
+            sample_min_similarity,
+            sample_min_interval,
+            sample_max_count,
+        )
+    ):
+        saved_path = save_target_sample(best.crop, log_dir, best.camera_id, now, "match", best.target_similarity)
+        if saved_path is not None:
+            target_profile.note_sample_saved(now)
     if keep_all:
         return detections
     return [best]
 
 
-def save_target_crop(crop: np.ndarray, log_dir: Path, camera_id: int) -> Optional[Path]:
+def save_target_sample(
+    crop: np.ndarray,
+    log_dir: Path,
+    camera_id: int,
+    now: float,
+    source: str,
+    target_similarity: Optional[float],
+) -> Optional[Path]:
     target_dir = log_dir / "targets"
     target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-cam{camera_id + 1}-target.jpg"
+    timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+    millis = int((now - int(now)) * 1000)
+    path = target_dir / f"{timestamp}-{millis:03d}-cam{camera_id + 1}-{source}.jpg"
     ok = cv2.imwrite(str(path), crop)
-    return path if ok else None
+    if not ok:
+        return None
+    append_target_sample_index(target_dir / "target_samples.csv", now, camera_id, source, target_similarity, path)
+    return path
+
+
+def append_target_sample_index(
+    csv_path: Path,
+    now: float,
+    camera_id: int,
+    source: str,
+    target_similarity: Optional[float],
+    image_path: Path,
+) -> None:
+    exists = csv_path.exists()
+    with csv_path.open("a", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["time", "camera", "source", "target_similarity", "image"],
+        )
+        if not exists:
+            writer.writeheader()
+        writer.writerow(
+            {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                "camera": camera_id + 1,
+                "source": source,
+                "target_similarity": "" if target_similarity is None else f"{target_similarity:.4f}",
+                "image": str(image_path),
+            }
+        )
 
 
 def register_target(
@@ -1019,7 +1101,9 @@ def register_target(
     now: float,
 ) -> None:
     target_profile.register_from_crop(crop)
-    target_profile.saved_path = save_target_crop(crop, log_dir, camera_id)
+    target_profile.saved_path = save_target_sample(crop, log_dir, camera_id, now, "register", 1.0)
+    if target_profile.saved_path is not None:
+        target_profile.note_sample_saved(now)
     tracker.activate_registered_target(1)
     tracker.note_target_registered(now, camera_id, bbox, target_profile.saved_path)
 
@@ -1033,7 +1117,16 @@ def register_target_from_detection(
     now: float,
 ) -> None:
     target_profile.register_from_detection(detection)
-    target_profile.saved_path = save_target_crop(detection.crop, log_dir, detection.camera_id)
+    target_profile.saved_path = save_target_sample(
+        detection.crop,
+        log_dir,
+        detection.camera_id,
+        now,
+        "register",
+        1.0,
+    )
+    if target_profile.saved_path is not None:
+        target_profile.note_sample_saved(now)
     tracker.activate_registered_target(1)
     tracker.note_target_registered(now, detection.camera_id, detection.bbox, target_profile.saved_path)
 
@@ -1539,6 +1632,11 @@ def run(args: argparse.Namespace) -> int:
                 args.target_threshold,
                 args.target_update_alpha,
                 args.track_all_after_register,
+                log_dir=log_dir,
+                now=now,
+                sample_min_similarity=args.target_sample_min_similarity,
+                sample_min_interval=args.target_sample_min_interval,
+                sample_max_count=args.target_sample_max_count,
             )
             detections_b = apply_target_profile(
                 raw_detections_b,
@@ -1546,6 +1644,11 @@ def run(args: argparse.Namespace) -> int:
                 args.target_threshold,
                 args.target_update_alpha,
                 args.track_all_after_register,
+                log_dir=log_dir,
+                now=now,
+                sample_min_similarity=args.target_sample_min_similarity,
+                sample_min_interval=args.target_sample_min_interval,
+                sample_max_count=args.target_sample_max_count,
             )
             tracks_a = tracker.update(0, detections_a, now)
             tracks_b = tracker.update(1, detections_b, now)
@@ -1762,6 +1865,24 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=6,
         help="Max reliable templates kept for the registered target.",
+    )
+    parser.add_argument(
+        "--target-sample-max-count",
+        type=int,
+        default=12,
+        help="Max registered-target crop samples saved under log_dir/targets.",
+    )
+    parser.add_argument(
+        "--target-sample-min-similarity",
+        type=float,
+        default=0.72,
+        help="Minimum target similarity for saving a matched target crop sample.",
+    )
+    parser.add_argument(
+        "--target-sample-min-interval",
+        type=float,
+        default=0.8,
+        help="Minimum seconds between saved target crop samples.",
     )
     parser.add_argument(
         "--track-all-after-register",
