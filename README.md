@@ -203,6 +203,14 @@ runs/20260624-093000-events.csv
 .\analyze_run.bat -RequireHandoff
 ```
 
+如果要同时检查是否频繁新建 ID，可以加质量阈值：
+
+```powershell
+.\analyze_run.bat -RequireHandoff -MinTargetMatches 2 -MinCrossCameraIds 1 -MaxUniqueIds 3
+```
+
+输出里的 `新建目标事件数`、`注册后新建目标事件数`、`唯一全局 ID 数` 可以用来判断追踪是否稳定。如果同一根目标移动时不断出现新的 `Gxxx`，通常说明检测框不稳定或 ReID 接力没有接上。
+
 判断是否真的完成跨摄像头识别，重点看日志里有没有同一个全局 ID 的链路：
 
 ```text

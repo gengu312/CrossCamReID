@@ -18,6 +18,13 @@ class HandoffResult:
     handoff_camera: Optional[str]
     target_match_count: int
     cross_camera_ids: list[str]
+    unique_global_ids: list[str]
+    new_event_count: int
+    matched_event_count: int
+    left_event_count: int
+    track_created_count: int
+    new_after_register_count: int
+    new_by_camera: dict[str, int]
 
     @property
     def handoff_success(self) -> bool:
@@ -39,6 +46,14 @@ def parse_args() -> argparse.Namespace:
         "--require-handoff",
         action="store_true",
         help="Exit with code 2 if registered target handoff was not observed.",
+    )
+    parser.add_argument("--max-new-ids", type=int, help="Fail if new object events exceed this number.")
+    parser.add_argument("--max-unique-ids", type=int, help="Fail if unique global IDs exceed this number.")
+    parser.add_argument("--min-target-matches", type=int, help="Fail if target_matched events are below this number.")
+    parser.add_argument(
+        "--min-cross-camera-ids",
+        type=int,
+        help="Fail if fewer global IDs appeared in both cameras.",
     )
     return parser.parse_args()
 
@@ -68,11 +83,21 @@ def analyze_rows(path: Path, rows: list[dict[str, str]]) -> HandoffResult:
     handoff_camera: Optional[str] = None
     target_match_count = 0
     seen_cameras_by_id: dict[str, set[str]] = {}
+    unique_global_ids: set[str] = set()
+    new_event_count = 0
+    matched_event_count = 0
+    left_event_count = 0
+    track_created_count = 0
+    new_after_register_count = 0
+    new_by_camera: dict[str, int] = {}
 
     for index, row in enumerate(rows):
         event_type = row.get("event_type", "")
         global_id = row.get("global_id", "")
         camera = row.get("camera", "")
+
+        if global_id:
+            unique_global_ids.add(global_id)
 
         if global_id and camera and event_type in {"target_registered", "target_matched", "matched", "track_created"}:
             seen_cameras_by_id.setdefault(global_id, set()).add(camera)
@@ -80,6 +105,22 @@ def analyze_rows(path: Path, rows: list[dict[str, str]]) -> HandoffResult:
         if event_type == "target_registered" and registered_id is None:
             registered_id = global_id
             registered_camera = camera
+
+        if event_type == "new":
+            new_event_count += 1
+            if registered_id is not None:
+                new_after_register_count += 1
+            if camera:
+                new_by_camera[camera] = new_by_camera.get(camera, 0) + 1
+
+        if event_type == "matched":
+            matched_event_count += 1
+
+        if event_type == "left":
+            left_event_count += 1
+
+        if event_type == "track_created":
+            track_created_count += 1
 
         if event_type == "target_matched":
             target_match_count += 1
@@ -114,6 +155,13 @@ def analyze_rows(path: Path, rows: list[dict[str, str]]) -> HandoffResult:
         handoff_camera=handoff_camera,
         target_match_count=target_match_count,
         cross_camera_ids=cross_camera_ids,
+        unique_global_ids=sorted(unique_global_ids),
+        new_event_count=new_event_count,
+        matched_event_count=matched_event_count,
+        left_event_count=left_event_count,
+        track_created_count=track_created_count,
+        new_after_register_count=new_after_register_count,
+        new_by_camera=dict(sorted(new_by_camera.items())),
     )
 
 
@@ -123,6 +171,17 @@ def print_result(result: HandoffResult) -> None:
     print(f"注册目标：{first_nonempty(result.registered_id, '未发现')}")
     print(f"注册摄像头：{first_nonempty(result.registered_camera, '未发现')}")
     print(f"目标匹配事件数：{result.target_match_count}")
+    print(f"新建目标事件数：{result.new_event_count}")
+    print(f"注册后新建目标事件数：{result.new_after_register_count}")
+    print(f"普通跨摄像头匹配事件数：{result.matched_event_count}")
+    print(f"离开画面事件数：{result.left_event_count}")
+    print(f"轨迹创建事件数：{result.track_created_count}")
+    print(f"唯一全局 ID 数：{len(result.unique_global_ids)}")
+    if result.new_by_camera:
+        camera_parts = [f"摄像头{camera}={count}" for camera, count in result.new_by_camera.items()]
+        print(f"新建目标按摄像头：{', '.join(camera_parts)}")
+    else:
+        print("新建目标按摄像头：无")
     if result.cross_camera_ids:
         print(f"跨摄像头出现过的 ID：{', '.join(result.cross_camera_ids)}")
     else:
@@ -143,6 +202,21 @@ def print_result(result: HandoffResult) -> None:
             print("原因：注册目标离开后，没有在另一个摄像头产生 target_matched。")
 
 
+def quality_failures(result: HandoffResult, args: argparse.Namespace) -> list[str]:
+    failures: list[str] = []
+    if args.require_handoff and not result.handoff_success:
+        failures.append("未观察到注册目标跨摄像头接力。")
+    if args.max_new_ids is not None and result.new_event_count > args.max_new_ids:
+        failures.append(f"新建目标事件数 {result.new_event_count} 超过阈值 {args.max_new_ids}。")
+    if args.max_unique_ids is not None and len(result.unique_global_ids) > args.max_unique_ids:
+        failures.append(f"唯一全局 ID 数 {len(result.unique_global_ids)} 超过阈值 {args.max_unique_ids}。")
+    if args.min_target_matches is not None and result.target_match_count < args.min_target_matches:
+        failures.append(f"目标匹配事件数 {result.target_match_count} 低于阈值 {args.min_target_matches}。")
+    if args.min_cross_camera_ids is not None and len(result.cross_camera_ids) < args.min_cross_camera_ids:
+        failures.append(f"跨摄像头 ID 数 {len(result.cross_camera_ids)} 低于阈值 {args.min_cross_camera_ids}。")
+    return failures
+
+
 def main() -> int:
     args = parse_args()
     log_path = Path(args.log) if args.log else latest_log(Path(args.log_dir))
@@ -156,8 +230,13 @@ def main() -> int:
     rows = read_rows(log_path)
     result = analyze_rows(log_path, rows)
     print_result(result)
-    if args.require_handoff and not result.handoff_success:
+    failures = quality_failures(result, args)
+    if failures:
+        print("质量验收：未通过")
+        for failure in failures:
+            print(f"- {failure}")
         return 2
+    print("质量验收：通过")
     return 0
 
 

@@ -1,7 +1,11 @@
 param(
     [string]$Log = "",
     [string]$LogDir = "runs",
-    [switch]$RequireHandoff
+    [switch]$RequireHandoff,
+    [int]$MaxNewIds = -1,
+    [int]$MaxUniqueIds = -1,
+    [int]$MinTargetMatches = -1,
+    [int]$MinCrossCameraIds = -1
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +35,18 @@ if ($Log -ne "") {
 }
 if ($RequireHandoff) {
     $AppArgs += "--require-handoff"
+}
+if ($MaxNewIds -ge 0) {
+    $AppArgs += @("--max-new-ids", "$MaxNewIds")
+}
+if ($MaxUniqueIds -ge 0) {
+    $AppArgs += @("--max-unique-ids", "$MaxUniqueIds")
+}
+if ($MinTargetMatches -ge 0) {
+    $AppArgs += @("--min-target-matches", "$MinTargetMatches")
+}
+if ($MinCrossCameraIds -ge 0) {
+    $AppArgs += @("--min-cross-camera-ids", "$MinCrossCameraIds")
 }
 
 & $PythonExe @AppArgs

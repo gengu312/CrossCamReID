@@ -53,7 +53,8 @@ Invoke-Step "Python compile" {
         src\capture_dataset.py `
         src\prepare_yolo_dataset.py `
         src\validate_yolo_dataset.py `
-        src\analyze_run_log.py
+        src\analyze_run_log.py `
+        src\realsense_depth_probe.py
 }
 
 Invoke-Step "Prepare sample YOLO export" {
@@ -98,7 +99,12 @@ Invoke-Step "Synthetic cross-camera handoff demo" {
 }
 
 Invoke-Step "Analyze handoff log" {
-    & $PythonExe src\analyze_run_log.py --log-dir $RunLogDir --require-handoff
+    & $PythonExe src\analyze_run_log.py `
+        --log-dir $RunLogDir `
+        --require-handoff `
+        --min-target-matches 2 `
+        --min-cross-camera-ids 1 `
+        --max-unique-ids 1
 }
 
 Invoke-Step "Training script check branch" {

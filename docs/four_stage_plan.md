@@ -44,8 +44,15 @@ YOLO 管状物检测
 处理方法：
 
 - 已在当前轻量 tracker 上加入短时运动预测，短暂遮挡或临时丢框时继续沿着原方向寻找。
+- 已增强日志分析，输出新建目标数、唯一全局 ID 数、目标匹配次数和跨摄像头 ID 数。
 - 后续可接入 ByteTrack、BoT-SORT 或 DeepSORT。
 - 记录 ID 切换次数，不能只靠肉眼判断效果。
+
+建议命令：
+
+```powershell
+.\analyze_run.bat -RequireHandoff -MinTargetMatches 2 -MinCrossCameraIds 1 -MaxUniqueIds 3
+```
 
 ## 阶段 3：增强跨摄像头 ReID
 
