@@ -837,6 +837,7 @@ def extract_feature(crop: np.ndarray, size: tuple[int, int], area: float) -> np.
     angle = np.mod(angle, 180.0)
     edge_hist, _ = np.histogram(angle, bins=8, range=(0, 180), weights=magnitude)
     edge_hist = normalize_vector(edge_hist.astype(np.float32))
+    texture_hist = local_binary_pattern_histogram(gray)
 
     w, h = size
     aspect = min(w, h) / max(w, h)
@@ -855,12 +856,36 @@ def extract_feature(crop: np.ndarray, size: tuple[int, int], area: float) -> np.
             hist.astype(np.float32) * 0.50,
             color_layout.astype(np.float32) * 0.30,
             edge_hist.astype(np.float32) * 0.25,
+            texture_hist.astype(np.float32) * 0.22,
             np.array([aspect, fill_ratio], dtype=np.float32) * 0.18,
             size_hint * 0.12,
             mean_color.astype(np.float32) * 0.15,
         ]
     )
     return normalize_vector(feature).astype(np.float32)
+
+
+def local_binary_pattern_histogram(gray: np.ndarray) -> np.ndarray:
+    if gray.shape[0] < 3 or gray.shape[1] < 3:
+        return np.zeros(256, dtype=np.float32)
+
+    center = gray[1:-1, 1:-1]
+    code = np.zeros(center.shape, dtype=np.uint8)
+    neighbors = [
+        gray[:-2, :-2],
+        gray[:-2, 1:-1],
+        gray[:-2, 2:],
+        gray[1:-1, 2:],
+        gray[2:, 2:],
+        gray[2:, 1:-1],
+        gray[2:, :-2],
+        gray[1:-1, :-2],
+    ]
+    for bit, neighbor in enumerate(neighbors):
+        code |= ((neighbor >= center).astype(np.uint8) << bit)
+
+    hist = np.bincount(code.ravel(), minlength=256).astype(np.float32)
+    return normalize_vector(hist)
 
 
 def normalize_vector(feature: np.ndarray) -> np.ndarray:
