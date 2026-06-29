@@ -63,9 +63,17 @@ YOLO 管状物检测
 
 处理方法：
 
+- 已增加 RealSense 深度探测入口，用于确认设备、深度帧、中心距离和有效深度比例。
 - 使用深度估计管子的前后层次和距离变化。
 - 对拿取动作记录目标从堆中离开的空间轨迹。
 - 用 RGB 检测结果加深度位置共同判断目标是否连续。
+
+建议命令：
+
+```powershell
+.\probe_realsense_depth.bat -ListOnly
+.\probe_realsense_depth.bat -Frames 30
+```
 
 ## 当前验收重点
 
