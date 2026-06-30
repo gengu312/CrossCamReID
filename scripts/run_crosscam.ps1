@@ -1,6 +1,7 @@
 param(
     [string]$CamA = "auto",
     [string]$CamB = "auto",
+    [string]$CameraScanOrder = "1,2,0,3,4,5",
     [string]$Backend = "dshow",
     [string]$RoiA = "80,80,480,220",
     [string]$RoiB = "80,80,480,220",
@@ -139,6 +140,7 @@ if ($Probe) {
     $AppArgs += @(
         "--cam-a", "$CamA",
         "--cam-b", "$CamB",
+        "--camera-scan-order", $CameraScanOrder,
         "--backend", $Backend,
         "--roi-a", $RoiA,
         "--roi-b", $RoiB,

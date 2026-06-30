@@ -1477,6 +1477,25 @@ def parse_view_order(value: str) -> tuple[int, int]:
     return aliases[text]
 
 
+def parse_camera_scan_order(value: str) -> list[int]:
+    indexes: list[int] = []
+    for raw_part in str(value).split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        try:
+            index = int(part)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("Camera scan order must be comma-separated integers.") from exc
+        if index < 0:
+            raise argparse.ArgumentTypeError("Camera scan order indexes must be >= 0.")
+        if index not in indexes:
+            indexes.append(index)
+    if not indexes:
+        raise argparse.ArgumentTypeError("Camera scan order cannot be empty.")
+    return indexes
+
+
 def backend_names(selected: str) -> tuple[str, ...]:
     if selected == "auto":
         return AUTO_BACKENDS
@@ -1501,13 +1520,31 @@ def open_camera(index: int, backend: str) -> tuple[Optional[cv2.VideoCapture], O
     return None, None
 
 
-def find_available_camera_indexes(max_index: int, backend: str) -> list[int]:
-    available: list[int] = []
+def ordered_camera_indexes(max_index: int, preferred_order: list[int]) -> list[int]:
+    indexes: list[int] = []
+    for index in preferred_order:
+        if index <= max_index and index not in indexes:
+            indexes.append(index)
     for index in range(max_index + 1):
+        if index not in indexes:
+            indexes.append(index)
+    return indexes
+
+
+def find_available_camera_indexes(
+    max_index: int,
+    backend: str,
+    preferred_order: list[int],
+    needed: int = 0,
+) -> list[int]:
+    available: list[int] = []
+    for index in ordered_camera_indexes(max_index, preferred_order):
         cap, _backend_name = open_camera(index, backend)
         if cap is not None:
             available.append(index)
             cap.release()
+            if needed > 0 and len(available) >= needed:
+                break
     return available
 
 
@@ -1519,12 +1556,19 @@ def resolve_camera_indexes(args: argparse.Namespace) -> tuple[int, int]:
             raise RuntimeError("两个摄像头索引不能相同。请使用不同索引，或使用 --cam-a auto --cam-b auto。")
         return cam_a, cam_b
 
-    available = find_available_camera_indexes(args.probe_max, args.backend)
     selected: list[int] = []
     if cam_a is not None:
         selected.append(cam_a)
     if cam_b is not None:
         selected.append(cam_b)
+
+    needed = 2 - len(selected)
+    available = find_available_camera_indexes(
+        args.probe_max,
+        args.backend,
+        args.camera_scan_order,
+        needed=needed,
+    )
 
     for index in available:
         if len(selected) >= 2:
@@ -1875,6 +1919,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--view-order", type=parse_view_order, default=(0, 1), help="GUI display order: AB or BA.")
     parser.add_argument("--probe", action="store_true", help="List available camera indexes.")
     parser.add_argument("--probe-max", type=int, default=5, help="Max camera index for --probe.")
+    parser.add_argument(
+        "--camera-scan-order",
+        type=parse_camera_scan_order,
+        default=parse_camera_scan_order("1,2,0,3,4,5"),
+        help="Preferred camera indexes for auto selection, such as 1,2,0,3,4,5.",
+    )
     parser.add_argument(
         "--detector",
         choices=("motion", "yolo"),
