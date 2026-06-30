@@ -1445,6 +1445,19 @@ def parse_yolo_classes(value: str) -> Optional[list[int]]:
     return classes or None
 
 
+def parse_camera_index(value: str) -> Optional[int]:
+    text = str(value).strip().lower()
+    if text == "auto":
+        return None
+    try:
+        index = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Camera index must be an integer or auto.") from exc
+    if index < 0:
+        raise argparse.ArgumentTypeError("Camera index must be >= 0, or auto.")
+    return index
+
+
 def backend_names(selected: str) -> tuple[str, ...]:
     if selected == "auto":
         return AUTO_BACKENDS
@@ -1469,12 +1482,52 @@ def open_camera(index: int, backend: str) -> tuple[Optional[cv2.VideoCapture], O
     return None, None
 
 
+def find_available_camera_indexes(max_index: int, backend: str) -> list[int]:
+    available: list[int] = []
+    for index in range(max_index + 1):
+        cap, _backend_name = open_camera(index, backend)
+        if cap is not None:
+            available.append(index)
+            cap.release()
+    return available
+
+
+def resolve_camera_indexes(args: argparse.Namespace) -> tuple[int, int]:
+    cam_a = args.cam_a
+    cam_b = args.cam_b
+    if cam_a is not None and cam_b is not None:
+        if cam_a == cam_b:
+            raise RuntimeError("两个摄像头索引不能相同。请使用不同索引，或使用 --cam-a auto --cam-b auto。")
+        return cam_a, cam_b
+
+    available = find_available_camera_indexes(args.probe_max, args.backend)
+    selected: list[int] = []
+    if cam_a is not None:
+        selected.append(cam_a)
+    if cam_b is not None:
+        selected.append(cam_b)
+
+    for index in available:
+        if len(selected) >= 2:
+            break
+        if index not in selected:
+            selected.append(index)
+
+    if len(selected) < 2:
+        raise RuntimeError(
+            "自动选择摄像头失败：当前可用摄像头少于 2 个。"
+            f" 可用索引={available}，可以先用 --probe 检查。"
+        )
+    return selected[0], selected[1]
+
+
 def open_sources(args: argparse.Namespace):
     if args.demo:
         return SyntheticCamera(0), SyntheticCamera(1)
 
-    cap_a, backend_a = open_camera(args.cam_a, args.backend)
-    cap_b, backend_b = open_camera(args.cam_b, args.backend)
+    cam_a_index, cam_b_index = resolve_camera_indexes(args)
+    cap_a, backend_a = open_camera(cam_a_index, args.backend)
+    cap_b, backend_b = open_camera(cam_b_index, args.backend)
 
     if cap_a is None or cap_b is None:
         if cap_a is not None:
@@ -1485,10 +1538,10 @@ def open_sources(args: argparse.Namespace):
             print("无法同时打开两个物理摄像头，已切换到内置模拟演示。")
             return SyntheticCamera(0), SyntheticCamera(1)
         raise RuntimeError(
-            "无法同时打开两个摄像头。可以先用 --probe 检查索引，"
-            "或使用 --backend auto / --fallback-demo。"
+            f"无法同时打开两个摄像头。已选择 A={cam_a_index}, B={cam_b_index}。"
+            " 可以先用 --probe 检查索引，或使用 --backend auto / --fallback-demo。"
         )
-    print(f"已打开摄像头：A 索引={args.cam_a} 后端={backend_a}，B 索引={args.cam_b} 后端={backend_b}")
+    print(f"已打开摄像头：A 索引={cam_a_index} 后端={backend_a}，B 索引={cam_b_index} 后端={backend_b}")
     return cap_a, cap_b
 
 
@@ -1769,8 +1822,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Two-camera OpenCV MVP for cross-camera object Re-ID.",
     )
-    parser.add_argument("--cam-a", type=int, default=0, help="Camera A index.")
-    parser.add_argument("--cam-b", type=int, default=1, help="Camera B index.")
+    parser.add_argument("--cam-a", type=parse_camera_index, default=None, help="Camera A index, or auto.")
+    parser.add_argument("--cam-b", type=parse_camera_index, default=None, help="Camera B index, or auto.")
     parser.add_argument(
         "--backend",
         choices=("auto", *BACKENDS.keys()),

@@ -145,23 +145,16 @@ numpy 2.5.0
 
 ### 0. 一键运行
 
-当前电脑已验证的摄像头索引：
-
-```text
-0 = 笔记本自带摄像头
-2 = RealSense RGB 摄像头
-```
-
 双击项目根目录下的：
 
 ```text
 run_crosscam.bat
 ```
 
-它会自动使用当前推荐参数运行：
+它会自动探测并选择当前可用的两个摄像头，再使用推荐参数运行：
 
 ```powershell
-python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480,220 --roi-b 80,80,480,220 --warmup-frames 30 --min-area 900 --target-mode pencil --single-object --max-area-ratio 0.45 --max-shape-ratio 0.75 --min-long-side 45 --max-short-side 180 --cross-threshold 0.65 --target-threshold 0.58 --target-update-alpha 0.04 --log-dir runs
+python src\crosscam_mvp.py --cam-a auto --cam-b auto --backend dshow --roi-a 80,80,480,220 --roi-b 80,80,480,220 --warmup-frames 30 --min-area 900 --target-mode pencil --single-object --max-area-ratio 0.45 --max-shape-ratio 0.75 --min-long-side 45 --max-short-side 180 --cross-threshold 0.65 --target-threshold 0.58 --target-update-alpha 0.04 --log-dir runs
 ```
 
 也可以在 PowerShell 里使用脚本参数：
@@ -170,7 +163,7 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --roi-a 80,80,480
 .\run_crosscam.bat -Probe
 .\run_crosscam.bat -Demo
 .\run_crosscam.bat -Headless -Frames 120
-.\run_crosscam.bat -CamA 0 -CamB 2
+.\run_crosscam.bat -CamA 1 -CamB 2
 .\run_crosscam.bat -Demo -AutoRegisterFirst -Headless -Frames 260
 ```
 
@@ -308,7 +301,7 @@ python src\crosscam_mvp.py --probe --backend msmf
 ### 3. 使用两个真实摄像头运行
 
 ```powershell
-python src\crosscam_mvp.py --cam-a 0 --cam-b 1
+python src\crosscam_mvp.py --cam-a auto --cam-b auto
 ```
 
 关闭窗口：
@@ -320,7 +313,7 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1
 也可以无窗口跑一段，确认双摄像头采集没有问题：
 
 ```powershell
-python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --headless --frames 90
+python src\crosscam_mvp.py --cam-a auto --cam-b auto --headless --frames 90
 ```
 
 如果现场只识别到一个摄像头，但仍然想先展示系统流程，可以使用回退模式：

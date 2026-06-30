@@ -1,6 +1,6 @@
 param(
-    [int]$CamA = 0,
-    [int]$CamB = 2,
+    [string]$CamA = "auto",
+    [string]$CamB = "auto",
     [string]$Backend = "dshow",
     [string]$RoiA = "80,80,480,220",
     [string]$RoiB = "80,80,480,220",
