@@ -164,8 +164,11 @@ python src\crosscam_mvp.py --cam-a auto --cam-b auto --backend dshow --roi-a 80,
 .\run_crosscam.bat -Demo
 .\run_crosscam.bat -Headless -Frames 120
 .\run_crosscam.bat -CamA 1 -CamB 2
+.\run_crosscam.bat -ViewOrder BA
 .\run_crosscam.bat -Demo -AutoRegisterFirst -Headless -Frames 260
 ```
+
+如果两个摄像头摆放和窗口左右相反，用 `-ViewOrder BA` 交换显示左右；默认 `AB` 表示摄像头 A 在左、摄像头 B 在右。交换后，点击左侧画面和“注册左侧目标”按钮也会对应新的左侧画面。
 
 推荐的真实物体演示流程：
 

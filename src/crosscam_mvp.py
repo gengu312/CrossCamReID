@@ -1150,6 +1150,10 @@ def register_best_detection(
     return True
 
 
+def displayed_camera_index(view_order: tuple[int, int], side: str) -> int:
+    return view_order[0] if side == "left" else view_order[1]
+
+
 def select_target_from_frame(
     frame: np.ndarray,
     camera_id: int,
@@ -1458,6 +1462,21 @@ def parse_camera_index(value: str) -> Optional[int]:
     return index
 
 
+def parse_view_order(value: str) -> tuple[int, int]:
+    text = str(value).strip().lower().replace(",", "").replace("|", "").replace(" ", "")
+    aliases = {
+        "ab": (0, 1),
+        "12": (0, 1),
+        "lr": (0, 1),
+        "ba": (1, 0),
+        "21": (1, 0),
+        "rl": (1, 0),
+    }
+    if text not in aliases:
+        raise argparse.ArgumentTypeError("View order must be AB or BA.")
+    return aliases[text]
+
+
 def backend_names(selected: str) -> tuple[str, ...]:
     if selected == "auto":
         return AUTO_BACKENDS
@@ -1710,12 +1729,21 @@ def run(args: argparse.Namespace) -> int:
                 matched_seen = True
 
             if not args.headless:
-                canvas = np.hstack(
-                    [
-                        draw_tracks(frame_a, tracks_a, 0, args.roi_a),
-                        draw_tracks(frame_b, tracks_b, 1, args.roi_b),
-                    ]
-                )
+                frames_by_camera = {
+                    0: (frame_a, tracks_a, args.roi_a, raw_detections_a),
+                    1: (frame_b, tracks_b, args.roi_b, raw_detections_b),
+                }
+                view_order = args.view_order
+                displayed_frames = [
+                    draw_tracks(
+                        frames_by_camera[camera_id][0],
+                        frames_by_camera[camera_id][1],
+                        camera_id,
+                        frames_by_camera[camera_id][2],
+                    )
+                    for camera_id in view_order
+                ]
+                canvas = np.hstack(displayed_frames)
                 content_height = canvas.shape[0]
                 canvas, buttons, max_event_scroll, _visible_events = draw_event_panel(
                     canvas,
@@ -1745,41 +1773,47 @@ def run(args: argparse.Namespace) -> int:
                 if action == "quit":
                     break
                 if action == "register_left":
+                    camera_id = displayed_camera_index(view_order, "left")
                     register_best_detection(
                         target_profile,
                         tracker,
                         event_logger,
-                        raw_detections_a,
-                        0,
+                        frames_by_camera[camera_id][3],
+                        camera_id,
                         log_dir,
                         time.time(),
                     )
                 if action == "register_right":
+                    camera_id = displayed_camera_index(view_order, "right")
                     register_best_detection(
                         target_profile,
                         tracker,
                         event_logger,
-                        raw_detections_b,
-                        1,
+                        frames_by_camera[camera_id][3],
+                        camera_id,
                         log_dir,
                         time.time(),
                     )
                 if action == "manual_left":
-                    selected = select_target_from_frame(frame_a, 0)
+                    camera_id = displayed_camera_index(view_order, "left")
+                    selected = select_target_from_frame(frames_by_camera[camera_id][0], camera_id)
                     if selected is not None:
                         crop, bbox = selected
-                        register_target(target_profile, tracker, event_logger, crop, bbox, 0, log_dir, time.time())
+                        register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, time.time())
                 if action == "manual_right":
-                    selected = select_target_from_frame(frame_b, 1)
+                    camera_id = displayed_camera_index(view_order, "right")
+                    selected = select_target_from_frame(frames_by_camera[camera_id][0], camera_id)
                     if selected is not None:
                         crop, bbox = selected
-                        register_target(target_profile, tracker, event_logger, crop, bbox, 1, log_dir, time.time())
+                        register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, time.time())
                 if canvas_click is not None and canvas_click[1] < FRAME_H:
                     click_x, click_y = canvas_click
                     if click_x < FRAME_W:
-                        clicked_detection = detection_at(raw_detections_a, click_x, click_y)
+                        camera_id = displayed_camera_index(view_order, "left")
+                        clicked_detection = detection_at(frames_by_camera[camera_id][3], click_x, click_y)
                     else:
-                        clicked_detection = detection_at(raw_detections_b, click_x - FRAME_W, click_y)
+                        camera_id = displayed_camera_index(view_order, "right")
+                        clicked_detection = detection_at(frames_by_camera[camera_id][3], click_x - FRAME_W, click_y)
                     if clicked_detection is not None:
                         register_target_from_detection(
                             target_profile,
@@ -1838,6 +1872,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--headless", action="store_true", help="Disable GUI window.")
     parser.add_argument("--frames", type=int, default=0, help="Stop after N frames; 0 means manual stop.")
+    parser.add_argument("--view-order", type=parse_view_order, default=(0, 1), help="GUI display order: AB or BA.")
     parser.add_argument("--probe", action="store_true", help="List available camera indexes.")
     parser.add_argument("--probe-max", type=int, default=5, help="Max camera index for --probe.")
     parser.add_argument(

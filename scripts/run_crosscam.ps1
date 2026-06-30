@@ -30,6 +30,8 @@ param(
     [string]$YoloClasses = "",
     [double]$PredictionHorizon = 0.35,
     [string]$LogDir = "runs",
+    [ValidateSet("AB", "BA")]
+    [string]$ViewOrder = "AB",
     [switch]$Headless,
     [int]$Frames = 0,
     [switch]$Demo,
@@ -124,6 +126,7 @@ if ($Probe) {
         "--yolo-iou", "$YoloIou",
         "--yolo-imgsz", "$YoloImgsz",
         "--prediction-horizon", "$PredictionHorizon",
+        "--view-order", $ViewOrder,
         "--log-dir", $LogDir
     )
     if ($YoloDevice -ne "") {
@@ -160,6 +163,7 @@ if ($Probe) {
         "--yolo-iou", "$YoloIou",
         "--yolo-imgsz", "$YoloImgsz",
         "--prediction-horizon", "$PredictionHorizon",
+        "--view-order", $ViewOrder,
         "--log-dir", $LogDir
     )
     if ($YoloDevice -ne "") {
