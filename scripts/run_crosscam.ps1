@@ -33,6 +33,9 @@ param(
     [string]$LogDir = "runs",
     [ValidateSet("AB", "BA")]
     [string]$ViewOrder = "AB",
+    [switch]$FlipA,
+    [switch]$FlipB,
+    [switch]$FlipBoth,
     [switch]$Headless,
     [int]$Frames = 0,
     [switch]$Demo,
@@ -179,6 +182,15 @@ if ($Probe) {
         $AppArgs += "--single-object"
     }
 
+}
+
+if (-not $Probe) {
+    if ($FlipA -or $FlipBoth) {
+        $AppArgs += "--flip-a"
+    }
+    if ($FlipB -or $FlipBoth) {
+        $AppArgs += "--flip-b"
+    }
 }
 
 if (-not $Probe -and $AutoRegisterFirst) {

@@ -1154,6 +1154,10 @@ def displayed_camera_index(view_order: tuple[int, int], side: str) -> int:
     return view_order[0] if side == "left" else view_order[1]
 
 
+def view_order_label(view_order: tuple[int, int]) -> str:
+    return "AB" if view_order == (0, 1) else "BA"
+
+
 def select_target_from_frame(
     frame: np.ndarray,
     camera_id: int,
@@ -1308,6 +1312,8 @@ def draw_event_panel(
     frame: np.ndarray,
     events: Iterable[str],
     scroll_offset: int = 0,
+    view_order: tuple[int, int] = (0, 1),
+    flip_horizontal: Optional[list[bool]] = None,
 ) -> tuple[np.ndarray, list[UiButton], int, int]:
     panel_height = 300
     panel = np.full((panel_height, frame.shape[1], 3), (24, 27, 31), dtype=np.uint8)
@@ -1319,13 +1325,25 @@ def draw_event_panel(
         (170, 184, 198),
         16,
     )
+    flip_horizontal = flip_horizontal or [False, False]
+    left_camera = displayed_camera_index(view_order, "left")
+    right_camera = displayed_camera_index(view_order, "right")
+    view_status = (
+        f"顺序 {view_order_label(view_order)} | "
+        f"翻转 左:{'开' if flip_horizontal[left_camera] else '关'} "
+        f"右:{'开' if flip_horizontal[right_camera] else '关'}"
+    )
+    draw_text(panel, view_status, (frame.shape[1] - 380, 16), (170, 184, 198), 16)
 
     buttons = [
         UiButton("注册左侧目标", "register_left", (16, 48, 142, 38), True),
         UiButton("注册右侧目标", "register_right", (168, 48, 142, 38), True),
         UiButton("手动框选左侧", "manual_left", (320, 48, 142, 38)),
         UiButton("手动框选右侧", "manual_right", (472, 48, 142, 38)),
-        UiButton("退出", "quit", (624, 48, 82, 38)),
+        UiButton("交换左右", "swap_views", (624, 48, 106, 38)),
+        UiButton("翻转左侧", "flip_left", (740, 48, 106, 38)),
+        UiButton("翻转右侧", "flip_right", (856, 48, 106, 38)),
+        UiButton("退出", "quit", (972, 48, 82, 38)),
     ]
     for button in buttons:
         draw_button(panel, button)
@@ -1713,6 +1731,8 @@ def run(args: argparse.Namespace) -> int:
     )
     target_profile = TargetProfile(max_templates=args.target_template_limit)
     ui_state = UiState()
+    view_order = args.view_order
+    flip_horizontal = [args.flip_a, args.flip_b]
     if not args.headless:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
         cv2.setMouseCallback(WINDOW_NAME, on_mouse, ui_state)
@@ -1729,6 +1749,10 @@ def run(args: argparse.Namespace) -> int:
 
             frame_a = cv2.resize(frame_a, (FRAME_W, FRAME_H))
             frame_b = cv2.resize(frame_b, (FRAME_W, FRAME_H))
+            if flip_horizontal[0]:
+                frame_a = cv2.flip(frame_a, 1)
+            if flip_horizontal[1]:
+                frame_b = cv2.flip(frame_b, 1)
             now = time.time()
 
             raw_detections_a = detectors[0].detect(frame_a)
@@ -1777,7 +1801,6 @@ def run(args: argparse.Namespace) -> int:
                     0: (frame_a, tracks_a, args.roi_a, raw_detections_a),
                     1: (frame_b, tracks_b, args.roi_b, raw_detections_b),
                 }
-                view_order = args.view_order
                 displayed_frames = [
                     draw_tracks(
                         frames_by_camera[camera_id][0],
@@ -1793,6 +1816,8 @@ def run(args: argparse.Namespace) -> int:
                     canvas,
                     tracker.events,
                     ui_state.event_scroll_offset,
+                    view_order,
+                    flip_horizontal,
                 )
                 ui_state.max_event_scroll = max_event_scroll
                 ui_state.event_scroll_offset = min(ui_state.event_scroll_offset, max_event_scroll)
@@ -1816,6 +1841,19 @@ def run(args: argparse.Namespace) -> int:
 
                 if action == "quit":
                     break
+                if action == "swap_views":
+                    view_order = (view_order[1], view_order[0])
+                    tracker.events.appendleft(f"{time.strftime('%H:%M:%S')} 已交换左右显示顺序为 {view_order_label(view_order)}")
+                if action == "flip_left":
+                    camera_id = displayed_camera_index(view_order, "left")
+                    flip_horizontal[camera_id] = not flip_horizontal[camera_id]
+                    state = "开启" if flip_horizontal[camera_id] else "关闭"
+                    tracker.events.appendleft(f"{time.strftime('%H:%M:%S')} 已{state}左侧画面水平翻转")
+                if action == "flip_right":
+                    camera_id = displayed_camera_index(view_order, "right")
+                    flip_horizontal[camera_id] = not flip_horizontal[camera_id]
+                    state = "开启" if flip_horizontal[camera_id] else "关闭"
+                    tracker.events.appendleft(f"{time.strftime('%H:%M:%S')} 已{state}右侧画面水平翻转")
                 if action == "register_left":
                     camera_id = displayed_camera_index(view_order, "left")
                     register_best_detection(
@@ -1917,6 +1955,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headless", action="store_true", help="Disable GUI window.")
     parser.add_argument("--frames", type=int, default=0, help="Stop after N frames; 0 means manual stop.")
     parser.add_argument("--view-order", type=parse_view_order, default=(0, 1), help="GUI display order: AB or BA.")
+    parser.add_argument("--flip-a", action="store_true", help="Horizontally flip camera A frames.")
+    parser.add_argument("--flip-b", action="store_true", help="Horizontally flip camera B frames.")
     parser.add_argument("--probe", action="store_true", help="List available camera indexes.")
     parser.add_argument("--probe-max", type=int, default=5, help="Max camera index for --probe.")
     parser.add_argument(
