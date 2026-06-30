@@ -36,6 +36,7 @@ param(
     [switch]$FlipA,
     [switch]$FlipB,
     [switch]$FlipBoth,
+    [switch]$ShowTrails,
     [switch]$Headless,
     [int]$Frames = 0,
     [switch]$Demo,
@@ -190,6 +191,9 @@ if (-not $Probe) {
     }
     if ($FlipB -or $FlipBoth) {
         $AppArgs += "--flip-b"
+    }
+    if ($ShowTrails) {
+        $AppArgs += "--show-trails"
     }
 }
 

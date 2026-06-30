@@ -166,6 +166,7 @@ python src\crosscam_mvp.py --cam-a auto --cam-b auto --camera-scan-order 1,2,0,3
 .\run_crosscam.bat -CamA 1 -CamB 2
 .\run_crosscam.bat -ViewOrder BA
 .\run_crosscam.bat -FlipBoth
+.\run_crosscam.bat -ShowTrails
 .\run_crosscam.bat -CameraScanOrder "2,1,0,3,4,5"
 .\run_crosscam.bat -Demo -AutoRegisterFirst -Headless -Frames 260
 ```
@@ -173,6 +174,8 @@ python src\crosscam_mvp.py --cam-a auto --cam-b auto --camera-scan-order 1,2,0,3
 如果两个摄像头摆放和窗口左右相反，用 `-ViewOrder BA` 交换显示左右；默认 `AB` 表示摄像头 A 在左、摄像头 B 在右。交换后，点击左侧画面和“注册左侧目标”按钮也会对应新的左侧画面。
 
 如果单个摄像头画面像照镜子一样左右反了，用 `-FlipA`、`-FlipB` 或 `-FlipBoth` 做水平翻转。运行窗口底部也有“交换左右”“翻转左侧”“翻转右侧”按钮，可以现场调整。
+
+默认只显示当前锁定框和编号，不显示历史轨迹线。若需要观察移动轨迹，再加 `-ShowTrails`。
 
 自动选择摄像头时默认优先尝试 `1,2`，找到两个可用摄像头就停止。若你的摄像头索引变了，可以用 `-CameraScanOrder` 调整优先顺序。
 

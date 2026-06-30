@@ -1207,6 +1207,7 @@ def draw_tracks(
     tracks: Iterable[Track],
     camera_id: int,
     roi: Optional[tuple[int, int, int, int]] = None,
+    show_trails: bool = False,
 ) -> np.ndarray:
     output = frame.copy()
     if roi is not None:
@@ -1251,9 +1252,10 @@ def draw_tracks(
             2,
             cv2.LINE_AA,
         )
-        points = list(track.history)
-        for i in range(1, len(points)):
-            cv2.line(output, points[i - 1], points[i], color, 2, cv2.LINE_AA)
+        if show_trails:
+            points = list(track.history)
+            for i in range(1, len(points)):
+                cv2.line(output, points[i - 1], points[i], color, 2, cv2.LINE_AA)
     return output
 
 
@@ -1807,6 +1809,7 @@ def run(args: argparse.Namespace) -> int:
                         frames_by_camera[camera_id][1],
                         camera_id,
                         frames_by_camera[camera_id][2],
+                        args.show_trails,
                     )
                     for camera_id in view_order
                 ]
@@ -1957,6 +1960,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--view-order", type=parse_view_order, default=(0, 1), help="GUI display order: AB or BA.")
     parser.add_argument("--flip-a", action="store_true", help="Horizontally flip camera A frames.")
     parser.add_argument("--flip-b", action="store_true", help="Horizontally flip camera B frames.")
+    parser.add_argument("--show-trails", action="store_true", help="Draw track center history trails.")
     parser.add_argument("--probe", action="store_true", help="List available camera indexes.")
     parser.add_argument("--probe-max", type=int, default=5, help="Max camera index for --probe.")
     parser.add_argument(
