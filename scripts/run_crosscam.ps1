@@ -1,7 +1,9 @@
 param(
+    [string]$CameraIndexes = "",
     [string]$CamA = "auto",
     [string]$CamB = "auto",
     [string]$CameraScanOrder = "1,2,0,3,4,5",
+    [string]$PreferredCameraIndexes = "1,3",
     [string]$Backend = "dshow",
     [string]$RoiA = "80,80,480,220",
     [string]$RoiB = "80,80,480,220",
@@ -35,6 +37,7 @@ param(
     [string]$ViewOrder = "AB",
     [switch]$FlipA,
     [switch]$FlipB,
+    [switch]$FlipC,
     [switch]$FlipBoth,
     [switch]$ShowTrails,
     [switch]$Headless,
@@ -44,6 +47,7 @@ param(
     [switch]$AutoRegisterFirst,
     [switch]$PipeMode,
     [switch]$TrackAllAfterRegister,
+    [switch]$SelectCameras,
     [switch]$SkipInstall
 )
 
@@ -111,6 +115,27 @@ if (-not $SkipInstall) {
     }
 }
 
+if ($SelectCameras) {
+    $SelectorArgs = @(
+        "src\camera_selector.py",
+        "--backend", $Backend,
+        "--probe-max", "10",
+        "--preferred-indexes", $PreferredCameraIndexes,
+        "--script", "scripts\run_crosscam.ps1"
+    )
+    if ($PipeMode) {
+        $SelectorArgs += "--pipe-mode"
+    }
+    if ($FlipBoth) {
+        $SelectorArgs += "--flip-both"
+    }
+    if ($ShowTrails) {
+        $SelectorArgs += "--show-trails"
+    }
+    & $PythonExe @SelectorArgs
+    exit $LASTEXITCODE
+}
+
 $AppArgs = @("src\crosscam_mvp.py")
 
 if ($Probe) {
@@ -141,9 +166,12 @@ if ($Probe) {
         $AppArgs += @("--yolo-classes", $YoloClasses)
     }
 } else {
+    if ($CameraIndexes -ne "") {
+        $AppArgs += @("--camera-indexes", $CameraIndexes)
+    } else {
+        $AppArgs += @("--cam-a", "$CamA", "--cam-b", "$CamB")
+    }
     $AppArgs += @(
-        "--cam-a", "$CamA",
-        "--cam-b", "$CamB",
         "--camera-scan-order", $CameraScanOrder,
         "--backend", $Backend,
         "--roi-a", $RoiA,
@@ -191,6 +219,9 @@ if (-not $Probe) {
     }
     if ($FlipB -or $FlipBoth) {
         $AppArgs += "--flip-b"
+    }
+    if ($FlipC) {
+        $AppArgs += "--flip-c"
     }
     if ($ShowTrails) {
         $AppArgs += "--show-trails"

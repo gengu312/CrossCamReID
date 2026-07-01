@@ -161,8 +161,13 @@ python src\crosscam_mvp.py --cam-a auto --cam-b auto --camera-scan-order 1,2,0,3
 
 ```powershell
 .\run_crosscam.bat -Probe
+.\run_crosscam.bat
+.\select_cameras.bat
+.\run_crosscam.bat -SelectCameras
 .\run_crosscam.bat -Demo
 .\run_crosscam.bat -Headless -Frames 120
+.\run_crosscam.bat -CameraIndexes "1,3"
+.\run_crosscam.bat -CameraIndexes "1,2,3"
 .\run_crosscam.bat -CamA 1 -CamB 2
 .\run_crosscam.bat -ViewOrder BA
 .\run_crosscam.bat -FlipBoth
@@ -172,6 +177,8 @@ python src\crosscam_mvp.py --cam-a auto --cam-b auto --camera-scan-order 1,2,0,3
 ```
 
 如果两个摄像头摆放和窗口左右相反，用 `-ViewOrder BA` 交换显示左右；默认 `AB` 表示摄像头 A 在左、摄像头 B 在右。交换后，点击左侧画面和“注册左侧目标”按钮也会对应新的左侧画面。
+
+双击或直接运行 `.\run_crosscam.bat` 会默认打开摄像头选择窗口，并优先勾选 `1,3` 两个外接摄像头。也可以运行 `.\select_cameras.bat` 或 `.\run_crosscam.bat -SelectCameras` 打开选择窗口。窗口会显示当前可用摄像头的预览图，勾选 1 到 3 个后启动。若要跳过选择窗口，可以直接用 `-CameraIndexes "1,3"` 或 `-CameraIndexes "1,2,3"` 指定要打开的摄像头。
 
 如果单个摄像头画面像照镜子一样左右反了，用 `-FlipA`、`-FlipB` 或 `-FlipBoth` 做水平翻转。运行窗口底部也有“交换左右”“翻转左侧”“翻转右侧”按钮，可以现场调整。
 

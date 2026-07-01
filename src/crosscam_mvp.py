@@ -488,6 +488,7 @@ class YoloDetector:
 class CrossCameraTracker:
     def __init__(
         self,
+        camera_count: int = 2,
         match_distance: float = 115.0,
         max_missed: int = 14,
         lost_ttl: float = 8.0,
@@ -500,9 +501,10 @@ class CrossCameraTracker:
         self.lost_ttl = lost_ttl
         self.cross_threshold = cross_threshold
         self.prediction_horizon = max(0.0, prediction_horizon)
-        self.next_local_id = [1, 1]
+        self.camera_count = camera_count
+        self.next_local_id = [1 for _ in range(camera_count)]
         self.next_global_id = 1
-        self.active: dict[int, list[Track]] = {0: [], 1: []}
+        self.active: dict[int, list[Track]] = {camera_id: [] for camera_id in range(camera_count)}
         self.lost: list[LostIdentity] = []
         self.events: Deque[str] = deque(maxlen=80)
         self.event_logger = event_logger
@@ -515,8 +517,8 @@ class CrossCameraTracker:
         self.registered_target_id = target_global_id
         self.pending_initial_target_camera = None
         self.next_global_id = max(self.next_global_id, target_global_id + 1)
-        self.next_local_id = [1, 1]
-        self.active = {0: [], 1: []}
+        self.next_local_id = [1 for _ in range(self.camera_count)]
+        self.active = {camera_id: [] for camera_id in range(self.camera_count)}
         self.lost = []
         self.global_seen_cameras = {}
         self.cross_camera_match_observed = False
@@ -1150,12 +1152,12 @@ def register_best_detection(
     return True
 
 
-def displayed_camera_index(view_order: tuple[int, int], side: str) -> int:
+def displayed_camera_index(view_order: list[int] | tuple[int, ...], side: str) -> int:
     return view_order[0] if side == "left" else view_order[1]
 
 
-def view_order_label(view_order: tuple[int, int]) -> str:
-    return "AB" if view_order == (0, 1) else "BA"
+def view_order_label(view_order: list[int] | tuple[int, ...]) -> str:
+    return "".join(chr(ord("A") + camera_id) for camera_id in view_order)
 
 
 def select_target_from_frame(
@@ -1259,6 +1261,14 @@ def draw_tracks(
     return output
 
 
+def pad_canvas_width(frame: np.ndarray, min_width: int) -> np.ndarray:
+    if frame.shape[1] >= min_width:
+        return frame
+    pad_width = min_width - frame.shape[1]
+    padding = np.full((frame.shape[0], pad_width, 3), (18, 20, 24), dtype=np.uint8)
+    return np.hstack([frame, padding])
+
+
 _FONT_CACHE: dict[int, object] = {}
 
 
@@ -1314,7 +1324,7 @@ def draw_event_panel(
     frame: np.ndarray,
     events: Iterable[str],
     scroll_offset: int = 0,
-    view_order: tuple[int, int] = (0, 1),
+    view_order: list[int] | tuple[int, ...] = (0, 1),
     flip_horizontal: Optional[list[bool]] = None,
 ) -> tuple[np.ndarray, list[UiButton], int, int]:
     panel_height = 300
@@ -1328,25 +1338,27 @@ def draw_event_panel(
         16,
     )
     flip_horizontal = flip_horizontal or [False, False]
-    left_camera = displayed_camera_index(view_order, "left")
-    right_camera = displayed_camera_index(view_order, "right")
+    flip_status = " ".join(
+        f"{chr(ord('A') + camera_id)}:{'开' if flip_horizontal[camera_id] else '关'}" for camera_id in view_order
+    )
     view_status = (
         f"顺序 {view_order_label(view_order)} | "
-        f"翻转 左:{'开' if flip_horizontal[left_camera] else '关'} "
-        f"右:{'开' if flip_horizontal[right_camera] else '关'}"
+        f"翻转 {flip_status}"
     )
     draw_text(panel, view_status, (frame.shape[1] - 380, 16), (170, 184, 198), 16)
 
-    buttons = [
-        UiButton("注册左侧目标", "register_left", (16, 48, 142, 38), True),
-        UiButton("注册右侧目标", "register_right", (168, 48, 142, 38), True),
-        UiButton("手动框选左侧", "manual_left", (320, 48, 142, 38)),
-        UiButton("手动框选右侧", "manual_right", (472, 48, 142, 38)),
-        UiButton("交换左右", "swap_views", (624, 48, 106, 38)),
-        UiButton("翻转左侧", "flip_left", (740, 48, 106, 38)),
-        UiButton("翻转右侧", "flip_right", (856, 48, 106, 38)),
-        UiButton("退出", "quit", (972, 48, 82, 38)),
-    ]
+    buttons = [UiButton("注册左侧目标", "register_left", (16, 48, 142, 38), True)]
+    if len(view_order) >= 2:
+        buttons.append(UiButton("注册右侧目标", "register_right", (168, 48, 142, 38), True))
+    buttons.append(UiButton("手动框选左侧", "manual_left", (320, 48, 142, 38)))
+    if len(view_order) >= 2:
+        buttons.append(UiButton("手动框选右侧", "manual_right", (472, 48, 142, 38)))
+    if len(view_order) >= 2:
+        buttons.append(UiButton("交换左右", "swap_views", (624, 48, 106, 38)))
+    buttons.append(UiButton("翻转左侧", "flip_left", (740, 48, 106, 38)))
+    if len(view_order) >= 2:
+        buttons.append(UiButton("翻转右侧", "flip_right", (856, 48, 106, 38)))
+    buttons.append(UiButton("退出", "quit", (972, 48, 82, 38)))
     for button in buttons:
         draw_button(panel, button)
 
@@ -1482,6 +1494,26 @@ def parse_camera_index(value: str) -> Optional[int]:
     return index
 
 
+def parse_camera_index_list(value: str) -> list[int]:
+    indexes: list[int] = []
+    for raw_part in str(value).split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        try:
+            index = int(part)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("Camera indexes must be comma-separated integers.") from exc
+        if index < 0:
+            raise argparse.ArgumentTypeError("Camera indexes must be >= 0.")
+        if index in indexes:
+            raise argparse.ArgumentTypeError("Camera indexes must not contain duplicates.")
+        indexes.append(index)
+    if not 1 <= len(indexes) <= 3:
+        raise argparse.ArgumentTypeError("Camera indexes must contain 1 to 3 indexes.")
+    return indexes
+
+
 def parse_view_order(value: str) -> tuple[int, int]:
     text = str(value).strip().lower().replace(",", "").replace("|", "").replace(" ", "")
     aliases = {
@@ -1568,13 +1600,16 @@ def find_available_camera_indexes(
     return available
 
 
-def resolve_camera_indexes(args: argparse.Namespace) -> tuple[int, int]:
+def resolve_camera_indexes(args: argparse.Namespace) -> list[int]:
+    if args.camera_indexes is not None:
+        return list(args.camera_indexes)
+
     cam_a = args.cam_a
     cam_b = args.cam_b
     if cam_a is not None and cam_b is not None:
         if cam_a == cam_b:
             raise RuntimeError("两个摄像头索引不能相同。请使用不同索引，或使用 --cam-a auto --cam-b auto。")
-        return cam_a, cam_b
+        return [cam_a, cam_b]
 
     selected: list[int] = []
     if cam_a is not None:
@@ -1601,41 +1636,51 @@ def resolve_camera_indexes(args: argparse.Namespace) -> tuple[int, int]:
             "自动选择摄像头失败：当前可用摄像头少于 2 个。"
             f" 可用索引={available}，可以先用 --probe 检查。"
         )
-    return selected[0], selected[1]
+    return selected[:2]
 
 
 def open_sources(args: argparse.Namespace):
     if args.demo:
-        return SyntheticCamera(0), SyntheticCamera(1)
+        return [SyntheticCamera(0), SyntheticCamera(1)]
 
-    cam_a_index, cam_b_index = resolve_camera_indexes(args)
-    cap_a, backend_a = open_camera(cam_a_index, args.backend)
-    cap_b, backend_b = open_camera(cam_b_index, args.backend)
+    camera_indexes = resolve_camera_indexes(args)
+    sources = []
+    opened_labels = []
+    for source_id, camera_index in enumerate(camera_indexes):
+        cap, backend_name = open_camera(camera_index, args.backend)
+        if cap is None:
+            for source in sources:
+                source.release()
+            if args.fallback_demo and len(camera_indexes) == 2:
+                print("无法同时打开两个物理摄像头，已切换到内置模拟演示。")
+                return [SyntheticCamera(0), SyntheticCamera(1)]
+            raise RuntimeError(
+                f"无法打开摄像头索引 {camera_index}。已选择索引={camera_indexes}。"
+                " 可以先用 --probe 检查索引，或使用 --backend auto / --fallback-demo。"
+            )
+        sources.append(cap)
+        opened_labels.append(f"{chr(ord('A') + source_id)} 索引={camera_index} 后端={backend_name}")
 
-    if cap_a is None or cap_b is None:
-        if cap_a is not None:
-            cap_a.release()
-        if cap_b is not None:
-            cap_b.release()
-        if args.fallback_demo:
-            print("无法同时打开两个物理摄像头，已切换到内置模拟演示。")
-            return SyntheticCamera(0), SyntheticCamera(1)
-        raise RuntimeError(
-            f"无法同时打开两个摄像头。已选择 A={cam_a_index}, B={cam_b_index}。"
-            " 可以先用 --probe 检查索引，或使用 --backend auto / --fallback-demo。"
-        )
-    print(f"已打开摄像头：A 索引={cam_a_index} 后端={backend_a}，B 索引={cam_b_index} 后端={backend_b}")
-    return cap_a, cap_b
+    print("已打开摄像头：" + "，".join(opened_labels))
+    return sources
 
 
-def build_detectors(args: argparse.Namespace):
+def roi_for_camera(args: argparse.Namespace, camera_id: int) -> Optional[tuple[int, int, int, int]]:
+    if camera_id == 0:
+        return args.roi_a
+    if camera_id == 1:
+        return args.roi_b
+    return args.roi_b
+
+
+def build_detectors(args: argparse.Namespace, camera_count: int):
     if args.detector == "motion":
         return [
             MotionDetector(
-                0,
+                camera_id,
                 args.min_area,
                 args.warmup_frames,
-                args.roi_a,
+                roi_for_camera(args, camera_id),
                 target_mode=args.target_mode,
                 single_object=args.single_object,
                 max_area_ratio=args.max_area_ratio,
@@ -1643,57 +1688,30 @@ def build_detectors(args: argparse.Namespace):
                 min_long_side=args.min_long_side,
                 max_short_side=args.max_short_side,
                 max_detections=args.max_detections,
-            ),
-            MotionDetector(
-                1,
-                args.min_area,
-                args.warmup_frames,
-                args.roi_b,
-                target_mode=args.target_mode,
-                single_object=args.single_object,
-                max_area_ratio=args.max_area_ratio,
-                max_shape_ratio=args.max_shape_ratio,
-                min_long_side=args.min_long_side,
-                max_short_side=args.max_short_side,
-                max_detections=args.max_detections,
-            ),
+            )
+            for camera_id in range(camera_count)
         ]
 
     if args.detector == "yolo":
         classes = parse_yolo_classes(args.yolo_classes)
         return [
             YoloDetector(
-                0,
+                camera_id,
                 args.yolo_model,
                 confidence=args.yolo_conf,
                 iou=args.yolo_iou,
                 image_size=args.yolo_imgsz,
                 device=args.yolo_device,
                 classes=classes,
-                roi=args.roi_a,
+                roi=roi_for_camera(args, camera_id),
                 single_object=args.single_object,
                 max_detections=args.max_detections,
                 max_area_ratio=args.max_area_ratio,
                 max_shape_ratio=args.max_shape_ratio,
                 min_long_side=args.min_long_side,
                 max_short_side=args.max_short_side,
-            ),
-            YoloDetector(
-                1,
-                args.yolo_model,
-                confidence=args.yolo_conf,
-                iou=args.yolo_iou,
-                image_size=args.yolo_imgsz,
-                device=args.yolo_device,
-                classes=classes,
-                roi=args.roi_b,
-                single_object=args.single_object,
-                max_detections=args.max_detections,
-                max_area_ratio=args.max_area_ratio,
-                max_shape_ratio=args.max_shape_ratio,
-                min_long_side=args.min_long_side,
-                max_short_side=args.max_short_side,
-            ),
+            )
+            for camera_id in range(camera_count)
         ]
 
     raise ValueError(f"Unsupported detector: {args.detector}")
@@ -1722,9 +1740,11 @@ def run(args: argparse.Namespace) -> int:
     log_dir = Path(args.log_dir)
     event_logger = EventLogger(not args.no_log, log_dir)
     sources = open_sources(args)
-    detectors = build_detectors(args)
+    camera_count = len(sources)
+    detectors = build_detectors(args, camera_count)
     print(f"检测模式：{args.detector}")
     tracker = CrossCameraTracker(
+        camera_count=camera_count,
         max_missed=args.max_missed,
         lost_ttl=args.lost_ttl,
         cross_threshold=args.cross_threshold,
@@ -1733,8 +1753,14 @@ def run(args: argparse.Namespace) -> int:
     )
     target_profile = TargetProfile(max_templates=args.target_template_limit)
     ui_state = UiState()
-    view_order = args.view_order
-    flip_horizontal = [args.flip_a, args.flip_b]
+    view_order = list(args.view_order) if camera_count == 2 else list(range(camera_count))
+    flip_horizontal = [False for _ in range(camera_count)]
+    if camera_count >= 1:
+        flip_horizontal[0] = args.flip_a
+    if camera_count >= 2:
+        flip_horizontal[1] = args.flip_b
+    if camera_count >= 3:
+        flip_horizontal[2] = args.flip_c
     if not args.headless:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
         cv2.setMouseCallback(WINDOW_NAME, on_mouse, ui_state)
@@ -1743,65 +1769,65 @@ def run(args: argparse.Namespace) -> int:
     matched_seen = False
     try:
         while True:
-            ok_a, frame_a = sources[0].read()
-            ok_b, frame_b = sources[1].read()
-            if not ok_a or not ok_b:
+            frames: list[np.ndarray] = []
+            stopped = False
+            for camera_id, source in enumerate(sources):
+                ok, frame = source.read()
+                if not ok or frame is None:
+                    stopped = True
+                    break
+                frame = cv2.resize(frame, (FRAME_W, FRAME_H))
+                if flip_horizontal[camera_id]:
+                    frame = cv2.flip(frame, 1)
+                frames.append(frame)
+            if stopped:
                 print("有一个视频源停止输出画面。")
                 break
 
-            frame_a = cv2.resize(frame_a, (FRAME_W, FRAME_H))
-            frame_b = cv2.resize(frame_b, (FRAME_W, FRAME_H))
-            if flip_horizontal[0]:
-                frame_a = cv2.flip(frame_a, 1)
-            if flip_horizontal[1]:
-                frame_b = cv2.flip(frame_b, 1)
             now = time.time()
 
-            raw_detections_a = detectors[0].detect(frame_a)
-            raw_detections_b = detectors[1].detect(frame_b)
-            if args.auto_register_first and not target_profile.active and raw_detections_a:
+            raw_detections_by_camera = [detector.detect(frames[camera_id]) for camera_id, detector in enumerate(detectors)]
+            if args.auto_register_first and not target_profile.active and raw_detections_by_camera[0]:
                 register_target_from_detection(
                     target_profile,
                     tracker,
                     event_logger,
-                    raw_detections_a[0],
+                    raw_detections_by_camera[0][0],
                     log_dir,
                     now,
                 )
-            detections_a = apply_target_profile(
-                raw_detections_a,
-                target_profile,
-                args.target_threshold,
-                args.target_update_alpha,
-                args.track_all_after_register,
-                log_dir=log_dir,
-                now=now,
-                sample_min_similarity=args.target_sample_min_similarity,
-                sample_min_interval=args.target_sample_min_interval,
-                sample_max_count=args.target_sample_max_count,
-            )
-            detections_b = apply_target_profile(
-                raw_detections_b,
-                target_profile,
-                args.target_threshold,
-                args.target_update_alpha,
-                args.track_all_after_register,
-                log_dir=log_dir,
-                now=now,
-                sample_min_similarity=args.target_sample_min_similarity,
-                sample_min_interval=args.target_sample_min_interval,
-                sample_max_count=args.target_sample_max_count,
-            )
-            tracks_a = tracker.update(0, detections_a, now)
-            tracks_b = tracker.update(1, detections_b, now)
+            detections_by_camera = [
+                apply_target_profile(
+                    raw_detections,
+                    target_profile,
+                    args.target_threshold,
+                    args.target_update_alpha,
+                    args.track_all_after_register,
+                    log_dir=log_dir,
+                    now=now,
+                    sample_min_similarity=args.target_sample_min_similarity,
+                    sample_min_interval=args.target_sample_min_interval,
+                    sample_max_count=args.target_sample_max_count,
+                )
+                for raw_detections in raw_detections_by_camera
+            ]
+            tracks_by_camera = [
+                tracker.update(camera_id, detections_by_camera[camera_id], now)
+                for camera_id in range(camera_count)
+            ]
 
             if tracker.cross_camera_match_observed:
                 matched_seen = True
 
             if not args.headless:
                 frames_by_camera = {
-                    0: (frame_a, tracks_a, args.roi_a, raw_detections_a),
-                    1: (frame_b, tracks_b, args.roi_b, raw_detections_b),
+                    camera_id: (
+                        frames[camera_id],
+                        tracks_by_camera[camera_id],
+                        roi_for_camera(args, camera_id),
+                        raw_detections_by_camera[camera_id],
+                    )
+                    for camera_id in range(camera_count)
                 }
                 displayed_frames = [
                     draw_tracks(
@@ -1814,6 +1840,7 @@ def run(args: argparse.Namespace) -> int:
                     for camera_id in view_order
                 ]
                 canvas = np.hstack(displayed_frames)
+                canvas = pad_canvas_width(canvas, 1080)
                 content_height = canvas.shape[0]
                 canvas, buttons, max_event_scroll, _visible_events = draw_event_panel(
                     canvas,
@@ -1845,14 +1872,14 @@ def run(args: argparse.Namespace) -> int:
                 if action == "quit":
                     break
                 if action == "swap_views":
-                    view_order = (view_order[1], view_order[0])
+                    view_order[0], view_order[1] = view_order[1], view_order[0]
                     tracker.events.appendleft(f"{time.strftime('%H:%M:%S')} 已交换左右显示顺序为 {view_order_label(view_order)}")
                 if action == "flip_left":
                     camera_id = displayed_camera_index(view_order, "left")
                     flip_horizontal[camera_id] = not flip_horizontal[camera_id]
                     state = "开启" if flip_horizontal[camera_id] else "关闭"
                     tracker.events.appendleft(f"{time.strftime('%H:%M:%S')} 已{state}左侧画面水平翻转")
-                if action == "flip_right":
+                if action == "flip_right" and len(view_order) >= 2:
                     camera_id = displayed_camera_index(view_order, "right")
                     flip_horizontal[camera_id] = not flip_horizontal[camera_id]
                     state = "开启" if flip_horizontal[camera_id] else "关闭"
@@ -1868,7 +1895,7 @@ def run(args: argparse.Namespace) -> int:
                         log_dir,
                         time.time(),
                     )
-                if action == "register_right":
+                if action == "register_right" and len(view_order) >= 2:
                     camera_id = displayed_camera_index(view_order, "right")
                     register_best_detection(
                         target_profile,
@@ -1885,7 +1912,7 @@ def run(args: argparse.Namespace) -> int:
                     if selected is not None:
                         crop, bbox = selected
                         register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, time.time())
-                if action == "manual_right":
+                if action == "manual_right" and len(view_order) >= 2:
                     camera_id = displayed_camera_index(view_order, "right")
                     selected = select_target_from_frame(frames_by_camera[camera_id][0], camera_id)
                     if selected is not None:
@@ -1893,32 +1920,34 @@ def run(args: argparse.Namespace) -> int:
                         register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, time.time())
                 if canvas_click is not None and canvas_click[1] < FRAME_H:
                     click_x, click_y = canvas_click
-                    if click_x < FRAME_W:
-                        camera_id = displayed_camera_index(view_order, "left")
-                        clicked_detection = detection_at(frames_by_camera[camera_id][3], click_x, click_y)
-                    else:
-                        camera_id = displayed_camera_index(view_order, "right")
-                        clicked_detection = detection_at(frames_by_camera[camera_id][3], click_x - FRAME_W, click_y)
-                    if clicked_detection is not None:
-                        register_target_from_detection(
-                            target_profile,
-                            tracker,
-                            event_logger,
-                            clicked_detection,
-                            log_dir,
-                            time.time(),
+                    display_slot = click_x // FRAME_W
+                    if 0 <= display_slot < len(view_order):
+                        camera_id = view_order[display_slot]
+                        clicked_detection = detection_at(
+                            frames_by_camera[camera_id][3],
+                            click_x - display_slot * FRAME_W,
+                            click_y,
                         )
-                    else:
-                        tracker.events.appendleft(
-                            f"{time.strftime('%H:%M:%S')} 未点中检测框，请点击目标框内部或使用手动框选"
-                        )
+                        if clicked_detection is not None:
+                            register_target_from_detection(
+                                target_profile,
+                                tracker,
+                                event_logger,
+                                clicked_detection,
+                                log_dir,
+                                time.time(),
+                            )
+                        else:
+                            tracker.events.appendleft(
+                                f"{time.strftime('%H:%M:%S')} 未点中检测框，请点击目标框内部或使用手动框选"
+                            )
 
             processed += 1
             if args.frames > 0 and processed >= args.frames:
                 break
     finally:
-        sources[0].release()
-        sources[1].release()
+        for source in sources:
+            source.release()
         event_logger.close()
         if not args.headless:
             cv2.destroyAllWindows()
@@ -1941,6 +1970,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Two-camera OpenCV MVP for cross-camera object Re-ID.",
     )
+    parser.add_argument(
+        "--camera-indexes",
+        type=parse_camera_index_list,
+        default=None,
+        help="Comma-separated camera indexes to open, 1 to 3 cameras, such as 1,3 or 1,2,3.",
+    )
     parser.add_argument("--cam-a", type=parse_camera_index, default=None, help="Camera A index, or auto.")
     parser.add_argument("--cam-b", type=parse_camera_index, default=None, help="Camera B index, or auto.")
     parser.add_argument(
@@ -1960,6 +1995,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--view-order", type=parse_view_order, default=(0, 1), help="GUI display order: AB or BA.")
     parser.add_argument("--flip-a", action="store_true", help="Horizontally flip camera A frames.")
     parser.add_argument("--flip-b", action="store_true", help="Horizontally flip camera B frames.")
+    parser.add_argument("--flip-c", action="store_true", help="Horizontally flip camera C frames.")
     parser.add_argument("--show-trails", action="store_true", help="Draw track center history trails.")
     parser.add_argument("--probe", action="store_true", help="List available camera indexes.")
     parser.add_argument("--probe-max", type=int, default=5, help="Max camera index for --probe.")

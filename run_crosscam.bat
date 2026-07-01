@@ -4,7 +4,11 @@ chcp 65001 >nul
 
 cd /d "%~dp0"
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run_crosscam.ps1" %*
+if "%~1"=="" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run_crosscam.ps1" -SelectCameras
+) else (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run_crosscam.ps1" %*
+)
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
