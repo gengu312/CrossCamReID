@@ -6,6 +6,8 @@ env/
 .env
 .idea/
 .vscode/
+*.docx
+docs/assets/
 docs/rendered_summary_check/
 camera_snapshots/
 runs/
