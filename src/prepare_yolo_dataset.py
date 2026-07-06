@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import random
 import shutil
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-images", required=True, help="Directory containing exported images.")
     parser.add_argument("--source-labels", required=True, help="Directory containing exported YOLO .txt labels.")
     parser.add_argument("--dataset-root", default="datasets/pipe_yolo", help="Output dataset root.")
+    parser.add_argument("--class-names", default="pipe", help="Comma-separated class names for data.yaml.")
     parser.add_argument("--val-ratio", type=float, default=0.2, help="Validation split ratio.")
     parser.add_argument("--seed", type=int, default=42, help="Deterministic split seed.")
     parser.add_argument("--clean", action="store_true", help="Clean existing train/val images and labels first.")
@@ -30,19 +32,53 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Create empty label files for images without labels. Use this only for intentional negative samples.",
     )
+    parser.add_argument(
+        "--drop-confidence-column",
+        action="store_true",
+        help="Convert YOLO prediction labels from 6 columns to 5 training columns.",
+    )
     return parser.parse_args()
 
 
 def list_images(directory: Path) -> dict[str, Path]:
-    return {
-        path.stem: path
-        for path in directory.iterdir()
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-    }
+    images: dict[str, Path] = {}
+    duplicate_stems: dict[str, list[str]] = {}
+    for path in directory.iterdir():
+        if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        if path.stem in images:
+            duplicate_stems.setdefault(path.stem, [images[path.stem].name]).append(path.name)
+            continue
+        images[path.stem] = path
+    if duplicate_stems:
+        preview = "; ".join(f"{stem}: {', '.join(names)}" for stem, names in list(duplicate_stems.items())[:3])
+        raise RuntimeError(f"图片目录中存在同名不同后缀图片，请先去重：{preview}")
+    return images
 
 
 def list_labels(directory: Path) -> dict[str, Path]:
     return {path.stem: path for path in directory.iterdir() if path.is_file() and path.suffix.lower() == ".txt"}
+
+
+def parse_class_names(value: str) -> list[str]:
+    names = [part.strip() for part in value.split(",") if part.strip()]
+    if not names:
+        raise RuntimeError("--class-names 不能为空。")
+    if len(set(names)) != len(names):
+        raise RuntimeError("--class-names 不能包含重复类别名。")
+    return names
+
+
+def write_data_yaml(root: Path, class_names: list[str]) -> None:
+    lines = [
+        f"path: {json.dumps(root.resolve().as_posix(), ensure_ascii=False)}",
+        "train: images/train",
+        "val: images/val",
+        "",
+        "names:",
+    ]
+    lines.extend(f"  {index}: {json.dumps(name, ensure_ascii=False)}" for index, name in enumerate(class_names))
+    (root / "data.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def clean_output(root: Path) -> None:
@@ -101,12 +137,37 @@ def split_items(items: list[DatasetItem], val_ratio: float, seed: int) -> tuple[
     return train_items, val_items
 
 
-def copy_item(item: DatasetItem, root: Path, split: str, allow_negative: bool) -> None:
+def write_training_label(source: Path, output: Path, drop_confidence_column: bool) -> None:
+    if not drop_confidence_column:
+        shutil.copy2(source, output)
+        return
+
+    converted_lines: list[str] = []
+    for line_number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split()
+        if len(parts) == 6:
+            parts = parts[:5]
+        elif len(parts) != 5:
+            raise RuntimeError(f"{source}:{line_number} YOLO 标签列数应为 5 或 6，实际为 {len(parts)}。")
+        converted_lines.append(" ".join(parts))
+    output.write_text("\n".join(converted_lines) + ("\n" if converted_lines else ""), encoding="utf-8")
+
+
+def copy_item(
+    item: DatasetItem,
+    root: Path,
+    split: str,
+    allow_negative: bool,
+    drop_confidence_column: bool,
+) -> None:
     image_output = root / "images" / split / item.image_path.name
     label_output = root / "labels" / split / f"{item.stem}.txt"
     shutil.copy2(item.image_path, image_output)
     if item.label_path.exists():
-        shutil.copy2(item.label_path, label_output)
+        write_training_label(item.label_path, label_output, drop_confidence_column)
     elif allow_negative:
         label_output.write_text("", encoding="utf-8")
     else:
@@ -124,28 +185,29 @@ def main() -> int:
     source_labels = Path(args.source_labels)
     root = Path(args.dataset_root)
 
-    if not source_images.exists():
-        print(f"图片目录不存在：{source_images}")
+    if not source_images.is_dir():
+        print(f"图片目录不存在或不是文件夹：{source_images}")
         return 2
-    if not source_labels.exists():
-        print(f"标签目录不存在：{source_labels}")
+    if not source_labels.is_dir():
+        print(f"标签目录不存在或不是文件夹：{source_labels}")
         return 2
-
-    ensure_output_dirs(root)
-    if args.clean:
-        clean_output(root)
 
     try:
+        class_names = parse_class_names(args.class_names)
         items = collect_items(source_images, source_labels, args.allow_negative)
         if not items:
             raise RuntimeError("没有找到可整理的图片。")
         train_items, val_items = split_items(items, args.val_ratio, args.seed)
         if not train_items or not val_items:
             raise RuntimeError("train/val 不能为空；请增加图片数量或调整 --val-ratio。")
+        ensure_output_dirs(root)
+        if args.clean:
+            clean_output(root)
         for item in train_items:
-            copy_item(item, root, "train", args.allow_negative)
+            copy_item(item, root, "train", args.allow_negative, args.drop_confidence_column)
         for item in val_items:
-            copy_item(item, root, "val", args.allow_negative)
+            copy_item(item, root, "val", args.allow_negative, args.drop_confidence_column)
+        write_data_yaml(root, class_names)
     except RuntimeError as exc:
         print(f"数据集整理失败：{exc}")
         return 2
@@ -154,6 +216,7 @@ def main() -> int:
     print(f"train split digest: {digest_split(train_items)}")
     print(f"val split digest: {digest_split(val_items)}")
     print(f"输出目录：{root}")
+    print(f"data.yaml：{root / 'data.yaml'}")
     return 0
 
 

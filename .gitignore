@@ -6,12 +6,15 @@ env/
 .env
 .idea/
 .vscode/
+docs/rendered_summary_check/
 camera_snapshots/
 runs/
 runs_test/
 runs_yolo/
 runs_yolo_eval/
+runs_yolo_label_opt/
 dataset_raw/
+datasets/pipe_yolo_candidate_*/
 datasets/pipe_yolo/images/**/*
 datasets/pipe_yolo/labels/**/*
 !datasets/pipe_yolo/images/**/

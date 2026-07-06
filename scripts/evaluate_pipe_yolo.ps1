@@ -13,7 +13,13 @@ param(
     [switch]$ValOnly,
     [switch]$PredictOnly,
     [switch]$SkipAnalyze,
+    [switch]$CollectIssues,
+    [string]$IssueOutputDir = "",
+    [int]$IssueMaxCount = 80,
+    [switch]$IssuePreview,
+    [switch]$IssueClean,
     [switch]$SkipInstall,
+    [switch]$CheckOnly,
     [switch]$PrintOnly
 )
 
@@ -72,6 +78,11 @@ if (-not $YoloExe) {
     exit 2
 }
 
+$ProjectForYolo = $Project
+if (-not [System.IO.Path]::IsPathRooted($ProjectForYolo)) {
+    $ProjectForYolo = Join-Path $RepoRoot $ProjectForYolo
+}
+
 $ValArgs = @(
     "detect",
     "val",
@@ -79,7 +90,7 @@ $ValArgs = @(
     "data=$Data",
     "imgsz=$Imgsz",
     "device=$Device",
-    "project=$Project",
+    "project=$ProjectForYolo",
     "name=$Name"
 )
 
@@ -92,7 +103,7 @@ $PredictArgs = @(
     "conf=$Conf",
     "imgsz=$Imgsz",
     "device=$Device",
-    "project=$Project",
+    "project=$ProjectForYolo",
     "name=$PredictName",
     "exist_ok=True",
     "save=True",
@@ -100,16 +111,49 @@ $PredictArgs = @(
     "save_conf=True"
 )
 
+$PredictRoot = Join-Path $Project $PredictName
+$PredictionLabels = Join-Path $PredictRoot "labels"
+$AnalysisCsv = Join-Path $PredictRoot "analysis.csv"
+$AnalysisJson = Join-Path $PredictRoot "analysis_summary.json"
+$AnalysisMd = Join-Path $PredictRoot "analysis_summary.md"
+if ($IssueOutputDir -eq "") {
+    $IssueOutputDir = Join-Path $PredictRoot "issue_samples"
+}
+
 $AnalyzeArgs = @(
     "src\analyze_yolo_eval.py",
     "--dataset-root", $DatasetRoot,
     "--split", $Split,
-    "--pred-labels", (Join-Path (Join-Path $Project $PredictName) "labels"),
-    "--report-csv", (Join-Path (Join-Path $Project $PredictName) "analysis.csv")
+    "--pred-labels", $PredictionLabels,
+    "--report-csv", $AnalysisCsv,
+    "--summary-json", $AnalysisJson,
+    "--summary-md", $AnalysisMd
 )
+
+$IssueArgs = @(
+    "src\collect_yolo_issues.py",
+    "--analysis-csv", $AnalysisCsv,
+    "--dataset-root", $DatasetRoot,
+    "--split", $Split,
+    "--pred-labels", $PredictionLabels,
+    "--output-dir", $IssueOutputDir,
+    "--max-count", "$IssueMaxCount"
+)
+if ($IssuePreview) {
+    $IssueArgs += "--preview"
+}
+if ($IssueClean) {
+    $IssueArgs += "--clean"
+}
 
 $RunVal = -not $PredictOnly
 $RunPredict = -not $ValOnly
+
+if ($CollectIssues -and ($ValOnly -or $SkipAnalyze -or $CheckOnly)) {
+    Write-Host "CollectIssues requires prediction labels and analysis.csv."
+    Write-Host "Remove -ValOnly/-SkipAnalyze/-CheckOnly, or run .\collect_yolo_issues.bat after analysis.csv exists."
+    exit 2
+}
 
 if ($PrintOnly) {
     if ($RunVal) {
@@ -119,6 +163,9 @@ if ($PrintOnly) {
         Write-Host ($YoloExe + " " + ($PredictArgs -join " "))
         if (-not $SkipAnalyze) {
             Write-Host ($PythonExe + " " + ($AnalyzeArgs -join " "))
+            if ($CollectIssues) {
+                Write-Host ($PythonExe + " " + ($IssueArgs -join " "))
+            }
         }
     }
     exit 0
@@ -133,6 +180,39 @@ if (-not (Test-Path $Model)) {
 if ($RunPredict -and -not (Test-Path $Source)) {
     Write-Host "Prediction source was not found: $Source"
     exit 2
+}
+
+if ($CheckOnly) {
+    $Failures = @()
+    if ($RunVal -and -not (Test-Path -LiteralPath $Data)) {
+        $Failures += "YOLO data.yaml does not exist: $Data"
+    }
+    if ($RunPredict -and -not $SkipAnalyze -and -not (Test-Path -LiteralPath $DatasetRoot)) {
+        $Failures += "Dataset root does not exist: $DatasetRoot"
+    }
+    if ($Conf -lt 0.0 -or $Conf -gt 1.0) {
+        $Failures += "Conf must be between 0 and 1: $Conf"
+    }
+    if ($Imgsz -le 0) {
+        $Failures += "Imgsz must be greater than 0: $Imgsz"
+    }
+    if ($Failures.Count -gt 0) {
+        Write-Host "YOLO evaluation check failed:"
+        $Failures | ForEach-Object { Write-Host "  - $_" }
+        exit 2
+    }
+
+    Write-Host "YOLO evaluation check:"
+    Write-Host "  model=$Model"
+    Write-Host "  data=$Data"
+    Write-Host "  dataset_root=$DatasetRoot"
+    Write-Host "  split=$Split"
+    Write-Host "  source=$Source"
+    Write-Host "  yolo=$YoloExe"
+    Write-Host "  prediction_labels=$PredictionLabels"
+    Write-Host "  analysis_csv=$AnalysisCsv"
+    Write-Host "CheckOnly: YOLO evaluation inputs are ready. Inference was not started."
+    exit 0
 }
 
 if ($RunVal) {
@@ -156,7 +236,15 @@ if ($RunPredict) {
         Write-Host "Analyzing prediction labels..."
         Write-Host ($PythonExe + " " + ($AnalyzeArgs -join " "))
         & $PythonExe @AnalyzeArgs
-        exit $LASTEXITCODE
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+        if ($CollectIssues) {
+            Write-Host "Collecting YOLO issue samples..."
+            Write-Host ($PythonExe + " " + ($IssueArgs -join " "))
+            & $PythonExe @IssueArgs
+            exit $LASTEXITCODE
+        }
     }
 }
 

@@ -31,6 +31,14 @@ dataset_raw/
 .\capture_dataset.bat -Scenario stack
 ```
 
+默认会按 `1,3,2,0,4,5` 的顺序自动寻找两个摄像头，优先使用 `1/3` 外接双摄；如果当天摄像头索引变了，可以加 `-CamA` / `-CamB` 手动指定。
+
+采集前可以先只看配置，不打开采集窗口：
+
+```powershell
+.\capture_dataset.bat -PrintOnly
+```
+
 窗口打开后，按 `Space` 或 `B` 同时保存两个摄像头当前画面。也可以按 `1` 只保存左侧，按 `2` 只保存右侧，按 `Q` 或 `Esc` 退出。
 
 场景参数对应保存目录：

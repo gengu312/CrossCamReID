@@ -15,6 +15,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONIOENCODING = "utf-8"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
@@ -50,7 +53,27 @@ function Find-Yolo {
     return $null
 }
 
+function Test-TrainingArgs {
+    if ($Epochs -le 0) {
+        Write-Host "Epochs must be greater than 0."
+        exit 2
+    }
+    if ($Imgsz -le 0) {
+        Write-Host "Imgsz must be greater than 0."
+        exit 2
+    }
+    if ($Batch -le 0) {
+        Write-Host "Batch must be greater than 0."
+        exit 2
+    }
+    if (-not (Test-Path $Data)) {
+        Write-Host "YOLO data.yaml was not found: $Data"
+        exit 2
+    }
+}
+
 $PythonExe = Find-Python
+Test-TrainingArgs
 
 if (-not $SkipInstall) {
     & $PythonExe -c "import ultralytics" *> $null
@@ -79,7 +102,11 @@ if (-not $SkipValidate) {
 }
 
 if ($CheckOnly) {
-    Write-Host "Dataset check only. Training is not started."
+    if ($SkipValidate) {
+        Write-Host "CheckOnly: parameters checked. Dataset validation was skipped. Training is not started."
+    } else {
+        Write-Host "CheckOnly: dataset validation passed. Training is not started."
+    }
     exit 0
 }
 

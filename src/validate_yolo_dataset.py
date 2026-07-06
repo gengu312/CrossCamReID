@@ -37,11 +37,21 @@ def parse_args() -> argparse.Namespace:
 def list_images(directory: Path) -> dict[str, Path]:
     if not directory.exists():
         return {}
-    return {
-        path.stem: path
-        for path in directory.iterdir()
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-    }
+    images: dict[str, Path] = {}
+    for path in directory.iterdir():
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS and path.stem not in images:
+            images[path.stem] = path
+    return images
+
+
+def duplicate_image_stems(directory: Path) -> dict[str, list[str]]:
+    if not directory.exists():
+        return {}
+    seen: dict[str, list[str]] = {}
+    for path in directory.iterdir():
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
+            seen.setdefault(path.stem, []).append(path.name)
+    return {stem: names for stem, names in seen.items() if len(names) > 1}
 
 
 def list_labels(directory: Path) -> dict[str, Path]:
@@ -98,6 +108,10 @@ def validate_split(
     labels = list_labels(report.label_dir)
     report.image_count = len(images)
     report.label_count = len(labels)
+
+    duplicates = duplicate_image_stems(report.image_dir)
+    for stem, names in sorted(duplicates.items()):
+        report.errors.append(f"{split} 存在同名不同后缀图片：{stem}: {', '.join(names)}")
 
     if report.image_count < min_images:
         report.errors.append(f"{split} 图片数量 {report.image_count} 小于要求 {min_images}")

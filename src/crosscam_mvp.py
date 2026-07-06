@@ -7,7 +7,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Deque, Iterable, Optional
+from typing import Callable, Deque, Iterable, Optional
 
 import cv2
 import numpy as np
@@ -63,6 +63,8 @@ class Detection:
     crop: np.ndarray
     target_similarity: Optional[float] = None
     is_target_match: bool = False
+    target_choice: Optional[str] = None
+    target_distance: Optional[float] = None
 
 
 @dataclass
@@ -78,6 +80,8 @@ class Track:
     missed: int = 0
     last_similarity: Optional[float] = None
     last_target_similarity: Optional[float] = None
+    last_target_choice: Optional[str] = None
+    last_target_distance: Optional[float] = None
     history: Deque[tuple[int, int]] = field(default_factory=lambda: deque(maxlen=24))
 
 
@@ -99,6 +103,8 @@ class TargetProfile:
     templates: list[np.ndarray] = field(default_factory=list)
     saved_sample_count: int = 0
     last_sample_saved_at: float = 0.0
+    last_camera_id: Optional[int] = None
+    last_bbox: Optional[tuple[int, int, int, int]] = None
 
     @property
     def active(self) -> bool:
@@ -106,6 +112,7 @@ class TargetProfile:
 
     def register_from_detection(self, detection: Detection) -> None:
         self._reset(detection.feature)
+        self.note_accepted(detection)
 
     def register_from_crop(self, crop: np.ndarray) -> None:
         h, w = crop.shape[:2]
@@ -132,6 +139,8 @@ class TargetProfile:
         self.templates = [self.feature.copy()]
         self.saved_sample_count = 0
         self.last_sample_saved_at = 0.0
+        self.last_camera_id = None
+        self.last_bbox = None
 
     def _append_template(self, feature: np.ndarray) -> None:
         if self.max_templates <= 1:
@@ -161,6 +170,22 @@ class TargetProfile:
         self.saved_sample_count += 1
         self.last_sample_saved_at = now
 
+    def note_accepted(self, detection: Detection) -> None:
+        self.note_bbox(detection.camera_id, detection.bbox)
+
+    def note_bbox(self, camera_id: int, bbox: tuple[int, int, int, int]) -> None:
+        self.last_camera_id = camera_id
+        self.last_bbox = bbox
+
+    def distance_from_last(self, detection: Detection) -> Optional[float]:
+        if self.last_camera_id != detection.camera_id or self.last_bbox is None:
+            return None
+        last_x, last_y, last_w, last_h = self.last_bbox
+        last_center = (last_x + last_w / 2.0, last_y + last_h / 2.0)
+        dx = last_center[0] - detection.center[0]
+        dy = last_center[1] - detection.center[1]
+        return math.hypot(dx, dy)
+
 
 class EventLogger:
     def __init__(self, enabled: bool, log_dir: Path) -> None:
@@ -185,6 +210,8 @@ class EventLogger:
                 "local_id",
                 "similarity",
                 "target_similarity",
+                "target_choice",
+                "target_distance",
                 "bbox",
                 "message",
             ],
@@ -202,6 +229,8 @@ class EventLogger:
         local_id: Optional[int] = None,
         similarity: Optional[float] = None,
         target_similarity: Optional[float] = None,
+        target_choice: Optional[str] = None,
+        target_distance: Optional[float] = None,
         bbox: Optional[tuple[int, int, int, int]] = None,
     ) -> None:
         if self._writer is None or self._file is None:
@@ -215,7 +244,29 @@ class EventLogger:
                 "local_id": "" if local_id is None else local_id,
                 "similarity": "" if similarity is None else f"{similarity:.4f}",
                 "target_similarity": "" if target_similarity is None else f"{target_similarity:.4f}",
+                "target_choice": "" if target_choice is None else target_choice,
+                "target_distance": "" if target_distance is None else f"{target_distance:.2f}",
                 "bbox": "" if bbox is None else f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
+                "message": message,
+            }
+        )
+        self._file.flush()
+
+    def write_run_config(self, now: float, message: str) -> None:
+        if self._writer is None or self._file is None:
+            return
+        self._writer.writerow(
+            {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                "event_type": "run_config",
+                "camera": "",
+                "global_id": "",
+                "local_id": "",
+                "similarity": "",
+                "target_similarity": "",
+                "target_choice": "",
+                "target_distance": "",
+                "bbox": "",
                 "message": message,
             }
         )
@@ -228,7 +279,7 @@ class EventLogger:
 
 
 class SyntheticCamera:
-    """Small deterministic two-camera scene used for repeatable verification."""
+    """Small deterministic synthetic scene used for repeatable verification."""
 
     def __init__(self, camera_id: int, width: int = FRAME_W, height: int = FRAME_H) -> None:
         self.camera_id = camera_id
@@ -266,9 +317,11 @@ class SyntheticCamera:
                 return 0, 0, False
             progress = (t - 25) / 90.0
             return int(80 + progress * 430), 185, True
-        if t < 140 or t > 230:
+        start = 140 + (self.camera_id - 1) * 115
+        end = start + 90
+        if t < start or t > end:
             return 0, 0, False
-        progress = (t - 140) / 90.0
+        progress = (t - start) / 90.0
         return int(80 + progress * 430), 185, True
 
     def _draw_pencil(self, frame: np.ndarray, x: int, y: int) -> None:
@@ -485,6 +538,180 @@ class YoloDetector:
         return detections[:limit]
 
 
+class RfDetrDetector:
+    MODEL_CLASSES = {
+        "nano": "RFDETRNano",
+        "small": "RFDETRSmall",
+        "base": "RFDETRBase",
+        "medium": "RFDETRMedium",
+        "large": "RFDETRLarge",
+        "xlarge": "RFDETRXLarge",
+        "2xlarge": "RFDETR2XLarge",
+    }
+
+    def __init__(
+        self,
+        camera_id: int,
+        model_size: str = "nano",
+        weights: str = "",
+        num_classes: int = 0,
+        confidence: float = 0.35,
+        classes: Optional[list[int]] = None,
+        class_id_mode: str = "auto",
+        category_id_offset: int = 1,
+        roi: Optional[tuple[int, int, int, int]] = None,
+        single_object: bool = False,
+        max_detections: int = 20,
+        max_area_ratio: float = 0.65,
+        max_shape_ratio: float = 1.0,
+        min_long_side: int = 0,
+        max_short_side: int = 0,
+        optimize: bool = False,
+    ) -> None:
+        try:
+            import rfdetr
+        except ImportError as exc:
+            raise RuntimeError(
+                "RF-DETR detector requires rfdetr. Install it with: "
+                "python -m pip install -r requirements-rfdetr.txt"
+            ) from exc
+
+        if model_size not in self.MODEL_CLASSES:
+            raise ValueError(f"Unsupported RF-DETR model size: {model_size}")
+
+        model_class = getattr(rfdetr, self.MODEL_CLASSES[model_size], None)
+        if model_class is None:
+            raise RuntimeError(f"Installed rfdetr does not provide {self.MODEL_CLASSES[model_size]}.")
+
+        self.camera_id = camera_id
+        self.model_size = model_size
+        self.weights = weights
+        self.num_classes = num_classes
+        self.confidence = confidence
+        self.classes = set(classes) if classes else None
+        self.class_id_mode = class_id_mode
+        self.category_id_offset = category_id_offset
+        self.roi = roi
+        self.single_object = single_object
+        self.max_detections = max_detections
+        self.max_area_ratio = max_area_ratio
+        self.max_shape_ratio = max_shape_ratio
+        self.min_long_side = min_long_side
+        self.max_short_side = max_short_side
+
+        model_kwargs = {"num_classes": num_classes} if num_classes > 0 else {}
+        if weights:
+            model_kwargs["pretrain_weights"] = weights
+        self.model = model_class(**model_kwargs)
+        if optimize and hasattr(self.model, "optimize_for_inference"):
+            optimized = self.model.optimize_for_inference()
+            if optimized is not None:
+                self.model = optimized
+
+    @staticmethod
+    def _map_class_id(raw_class_id: int, mode: str, category_id_offset: int) -> int:
+        if mode == "zero":
+            return raw_class_id
+        if mode == "category":
+            return raw_class_id - category_id_offset
+        if raw_class_id >= category_id_offset:
+            return raw_class_id - category_id_offset
+        return raw_class_id
+
+    @staticmethod
+    def _prediction_arrays(predictions) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        xyxy = np.asarray(getattr(predictions, "xyxy", []), dtype=np.float32)
+        if xyxy.size == 0:
+            return np.empty((0, 4), dtype=np.float32), np.empty((0,), dtype=np.float32), None
+        if xyxy.ndim == 1:
+            if xyxy.size % 4 != 0:
+                raise RuntimeError(f"RF-DETR xyxy 输出长度不是 4 的倍数：{xyxy.size}")
+            xyxy = xyxy.reshape(-1, 4)
+        elif xyxy.ndim == 2:
+            if xyxy.shape[1] < 4:
+                raise RuntimeError(f"RF-DETR xyxy 输出列数不足 4：{xyxy.shape[1]}")
+            if xyxy.shape[1] > 4:
+                xyxy = xyxy[:, :4]
+        else:
+            raise RuntimeError(f"RF-DETR xyxy 输出维度异常：{xyxy.ndim}")
+
+        box_count = len(xyxy)
+        confidences = getattr(predictions, "confidence", None)
+        if confidences is None:
+            confidences_array = np.ones(box_count, dtype=np.float32)
+        else:
+            confidences_array = np.asarray(confidences, dtype=np.float32).reshape(-1)
+            if len(confidences_array) < box_count:
+                confidences_array = np.pad(confidences_array, (0, box_count - len(confidences_array)), constant_values=1.0)
+
+        class_ids = getattr(predictions, "class_id", None)
+        if class_ids is None:
+            class_id_array = None
+        else:
+            class_id_array = np.asarray(class_ids, dtype=np.int32).reshape(-1)
+            if len(class_id_array) < box_count:
+                class_id_array = np.pad(class_id_array, (0, box_count - len(class_id_array)), constant_values=0)
+        return xyxy, confidences_array[:box_count], None if class_id_array is None else class_id_array[:box_count]
+
+    def detect(self, frame: np.ndarray) -> list[Detection]:
+        view, offset_x, offset_y = crop_roi(frame, self.roi)
+        rgb_view = cv2.cvtColor(view, cv2.COLOR_BGR2RGB)
+        predictions = self.model.predict(rgb_view, threshold=self.confidence)
+
+        xyxy, confidences_array, class_id_array = self._prediction_arrays(predictions)
+        if len(xyxy) == 0:
+            return []
+
+        detections: list[Detection] = []
+        for index, (box, confidence) in enumerate(zip(xyxy, confidences_array)):
+            raw_class_id = 0 if class_id_array is None else int(class_id_array[index])
+            class_id = self._map_class_id(raw_class_id, self.class_id_mode, self.category_id_offset)
+            if class_id < 0:
+                continue
+            if self.classes is not None and class_id not in self.classes:
+                continue
+
+            x1, y1, x2, y2 = box
+            x = max(0, int(round(x1)))
+            y = max(0, int(round(y1)))
+            w = max(1, int(round(x2 - x1)))
+            h = max(1, int(round(y2 - y1)))
+            x, y, w, h = clamp_roi((x, y, w, h), view.shape[1], view.shape[0])
+            bbox_area = w * h
+            if bbox_area > view.shape[0] * view.shape[1] * self.max_area_ratio:
+                continue
+            long_side = max(w, h)
+            short_side = min(w, h)
+            shape_ratio = short_side / max(1, long_side)
+            if self.min_long_side > 0 and long_side < self.min_long_side:
+                continue
+            if self.max_short_side > 0 and short_side > self.max_short_side:
+                continue
+            if self.max_shape_ratio < 1.0 and shape_ratio > self.max_shape_ratio:
+                continue
+            crop = view[y : y + h, x : x + w]
+            if crop.size == 0:
+                continue
+
+            bbox = (x + offset_x, y + offset_y, w, h)
+            area = float(bbox_area)
+            detections.append(
+                Detection(
+                    camera_id=self.camera_id,
+                    bbox=bbox,
+                    center=(bbox[0] + w / 2.0, bbox[1] + h / 2.0),
+                    area=area,
+                    score=float(confidence),
+                    feature=extract_feature(crop, (w, h), area),
+                    crop=crop,
+                )
+            )
+
+        detections.sort(key=lambda item: item.score, reverse=True)
+        limit = 1 if self.single_object else self.max_detections
+        return detections[:limit]
+
+
 class CrossCameraTracker:
     def __init__(
         self,
@@ -543,6 +770,8 @@ class CrossCameraTracker:
             message,
             similarity=1.0,
             target_similarity=1.0,
+            target_choice="register",
+            target_distance=0.0,
             bbox=bbox,
         )
         self._note_seen(target_id, camera_id)
@@ -600,6 +829,8 @@ class CrossCameraTracker:
                     f"摄像头{camera_id + 1}：发现新目标 G{global_id:03d}",
                     similarity=similarity,
                     target_similarity=detection.target_similarity,
+                    target_choice=detection.target_choice,
+                    target_distance=detection.target_distance,
                     bbox=detection.bbox,
                 )
             else:
@@ -608,9 +839,19 @@ class CrossCameraTracker:
                     event_type,
                     camera_id,
                     global_id,
-                    self._matched_message(camera_id, global_id, event_type, similarity, detection.target_similarity),
+                    self._matched_message(
+                        camera_id,
+                        global_id,
+                        event_type,
+                        similarity,
+                        detection.target_similarity,
+                        detection.target_choice,
+                        detection.target_distance,
+                    ),
                     similarity=similarity,
                     target_similarity=detection.target_similarity,
+                    target_choice=detection.target_choice,
+                    target_distance=detection.target_distance,
                     bbox=detection.bbox,
                 )
 
@@ -626,6 +867,8 @@ class CrossCameraTracker:
                 last_seen=now,
                 last_similarity=similarity,
                 last_target_similarity=detection.target_similarity,
+                last_target_choice=detection.target_choice,
+                last_target_distance=detection.target_distance,
             )
             if self.event_logger is not None:
                 self.event_logger.write(
@@ -637,6 +880,8 @@ class CrossCameraTracker:
                     local_id=local_id,
                     similarity=similarity,
                     target_similarity=detection.target_similarity,
+                    target_choice=detection.target_choice,
+                    target_distance=detection.target_distance,
                     bbox=detection.bbox,
                 )
             track.history.append((int(detection.center[0]), int(detection.center[1])))
@@ -729,10 +974,14 @@ class CrossCameraTracker:
         event_type: str,
         similarity: Optional[float],
         target_similarity: Optional[float],
+        target_choice: Optional[str],
+        target_distance: Optional[float],
     ) -> str:
         if event_type == "target_matched":
             sim_text = "" if target_similarity is None else f"，目标相似度={target_similarity:.2f}"
-            return f"摄像头{camera_id + 1}：匹配到目标 G{global_id:03d}{sim_text}"
+            choice_text = "" if target_choice is None else f"，选择={target_choice}"
+            distance_text = "" if target_distance is None else f"，距上次={target_distance:.0f}px"
+            return f"摄像头{camera_id + 1}：匹配到目标 G{global_id:03d}{sim_text}{choice_text}{distance_text}"
         sim_text = "" if similarity is None else f"，相似度={similarity:.2f}"
         return f"摄像头{camera_id + 1}：匹配到 G{global_id:03d}{sim_text}"
 
@@ -765,6 +1014,8 @@ class CrossCameraTracker:
         track.missed = 0
         track.last_similarity = similarity
         track.last_target_similarity = detection.target_similarity
+        track.last_target_choice = detection.target_choice
+        track.last_target_distance = detection.target_distance
         track.history.append((int(detection.center[0]), int(detection.center[1])))
 
     def _move_to_lost(self, track: Track, now: float) -> None:
@@ -822,6 +1073,8 @@ class CrossCameraTracker:
         local_id: Optional[int] = None,
         similarity: Optional[float] = None,
         target_similarity: Optional[float] = None,
+        target_choice: Optional[str] = None,
+        target_distance: Optional[float] = None,
         bbox: Optional[tuple[int, int, int, int]] = None,
     ) -> None:
         self.events.appendleft(f"{time.strftime('%H:%M:%S', time.localtime(now))} {message}")
@@ -835,6 +1088,8 @@ class CrossCameraTracker:
                 local_id=local_id,
                 similarity=similarity,
                 target_similarity=target_similarity,
+                target_choice=target_choice,
+                target_distance=target_distance,
                 bbox=bbox,
             )
 
@@ -1001,11 +1256,14 @@ def apply_target_profile(
     threshold: float,
     update_alpha: float,
     keep_all: bool = False,
+    stick_distance: float = 120.0,
+    switch_margin: float = 0.08,
     log_dir: Optional[Path] = None,
     now: Optional[float] = None,
     sample_min_similarity: float = 0.72,
     sample_min_interval: float = 0.8,
     sample_max_count: int = 12,
+    can_claim_target: Optional[Callable[[Detection], bool]] = None,
 ) -> list[Detection]:
     if not target_profile.active:
         return detections
@@ -1020,12 +1278,25 @@ def apply_target_profile(
     if not accepted:
         return detections if keep_all else []
 
-    accepted.sort(key=lambda item: (item.target_similarity or 0.0, item.score), reverse=True)
-    best = accepted[0]
+    best = select_stable_target_match(accepted, target_profile, stick_distance, switch_margin)
+    if can_claim_target is not None and not can_claim_target(best):
+        for detection in detections:
+            detection.is_target_match = False
+            if detection is best:
+                detection.target_choice = "blocked"
+            else:
+                detection.target_choice = None
+                detection.target_distance = None
+        return detections if keep_all else []
+
     for detection in detections:
         detection.is_target_match = detection is best
+        if detection is not best:
+            detection.target_choice = None
+            detection.target_distance = None
     if not keep_all:
         target_profile.update_from_detection(best, update_alpha)
+    target_profile.note_accepted(best)
     if (
         log_dir is not None
         and now is not None
@@ -1043,6 +1314,50 @@ def apply_target_profile(
     if keep_all:
         return detections
     return [best]
+
+
+def select_stable_target_match(
+    accepted: list[Detection],
+    target_profile: TargetProfile,
+    stick_distance: float,
+    switch_margin: float,
+) -> Detection:
+    accepted.sort(key=lambda item: (item.target_similarity or 0.0, item.score), reverse=True)
+    for detection in accepted:
+        detection.target_distance = target_profile.distance_from_last(detection)
+    best = accepted[0]
+    if stick_distance <= 0 or target_profile.last_bbox is None:
+        best.target_choice = "best"
+        return best
+
+    nearby = []
+    for detection in accepted:
+        distance = detection.target_distance
+        if distance is not None and distance <= stick_distance:
+            nearby.append(detection)
+    if not nearby:
+        best.target_choice = "best"
+        return best
+
+    sticky = min(
+        nearby,
+        key=lambda item: (
+            (item.target_distance or 0.0) / max(1.0, stick_distance),
+            -(item.target_similarity or 0.0),
+            -item.score,
+        ),
+    )
+    if sticky is best:
+        sticky.target_choice = "near"
+        return sticky
+
+    best_similarity = best.target_similarity or 0.0
+    sticky_similarity = sticky.target_similarity or 0.0
+    if sticky_similarity + max(0.0, switch_margin) >= best_similarity:
+        sticky.target_choice = "sticky"
+        return sticky
+    best.target_choice = "switch"
+    return best
 
 
 def save_target_sample(
@@ -1103,6 +1418,7 @@ def register_target(
     now: float,
 ) -> None:
     target_profile.register_from_crop(crop)
+    target_profile.note_bbox(camera_id, bbox)
     target_profile.saved_path = save_target_sample(crop, log_dir, camera_id, now, "register", 1.0)
     if target_profile.saved_path is not None:
         target_profile.note_sample_saved(now)
@@ -1158,6 +1474,25 @@ def displayed_camera_index(view_order: list[int] | tuple[int, ...], side: str) -
 
 def view_order_label(view_order: list[int] | tuple[int, ...]) -> str:
     return "".join(chr(ord("A") + camera_id) for camera_id in view_order)
+
+
+def action_from_key(key: int) -> Optional[str]:
+    if key in (27, ord("q")):
+        return "quit"
+    key_actions = {
+        ord("r"): "register_left",
+        ord("1"): "register_left",
+        ord("t"): "register_right",
+        ord("2"): "register_right",
+        ord("3"): "register_third",
+        ord("m"): "manual_left",
+        ord("4"): "manual_left",
+        ord("n"): "manual_right",
+        ord("5"): "manual_right",
+        ord("6"): "manual_third",
+        ord("7"): "flip_third",
+    }
+    return key_actions.get(key)
 
 
 def select_target_from_frame(
@@ -1326,6 +1661,8 @@ def draw_event_panel(
     scroll_offset: int = 0,
     view_order: list[int] | tuple[int, ...] = (0, 1),
     flip_horizontal: Optional[list[bool]] = None,
+    target_status: str = "",
+    target_status_color: tuple[int, int, int] = (170, 184, 198),
 ) -> tuple[np.ndarray, list[UiButton], int, int]:
     panel_height = 300
     panel = np.full((panel_height, frame.shape[1], 3), (24, 27, 31), dtype=np.uint8)
@@ -1350,26 +1687,44 @@ def draw_event_panel(
     buttons = [UiButton("注册左侧目标", "register_left", (16, 48, 142, 38), True)]
     if len(view_order) >= 2:
         buttons.append(UiButton("注册右侧目标", "register_right", (168, 48, 142, 38), True))
-    buttons.append(UiButton("手动框选左侧", "manual_left", (320, 48, 142, 38)))
+    next_x = 320
+    if len(view_order) >= 3:
+        buttons.append(UiButton("注册第三路目标", "register_third", (next_x, 48, 154, 38), True))
+        next_x += 164
+    buttons.append(UiButton("手动框选左侧", "manual_left", (next_x, 48, 142, 38)))
+    next_x += 152
     if len(view_order) >= 2:
-        buttons.append(UiButton("手动框选右侧", "manual_right", (472, 48, 142, 38)))
+        buttons.append(UiButton("手动框选右侧", "manual_right", (next_x, 48, 142, 38)))
+        next_x += 152
+    if len(view_order) >= 3:
+        buttons.append(UiButton("手动框选第三路", "manual_third", (next_x, 48, 154, 38)))
+        next_x += 164
     if len(view_order) >= 2:
-        buttons.append(UiButton("交换左右", "swap_views", (624, 48, 106, 38)))
-    buttons.append(UiButton("翻转左侧", "flip_left", (740, 48, 106, 38)))
+        buttons.append(UiButton("交换左右", "swap_views", (next_x, 48, 106, 38)))
+        next_x += 116
+    buttons.append(UiButton("翻转左侧", "flip_left", (next_x, 48, 106, 38)))
+    next_x += 116
     if len(view_order) >= 2:
-        buttons.append(UiButton("翻转右侧", "flip_right", (856, 48, 106, 38)))
-    buttons.append(UiButton("退出", "quit", (972, 48, 82, 38)))
+        buttons.append(UiButton("翻转右侧", "flip_right", (next_x, 48, 106, 38)))
+        next_x += 116
+    if len(view_order) >= 3:
+        buttons.append(UiButton("翻转第三路", "flip_third", (next_x, 48, 122, 38)))
+        next_x += 132
+    buttons.append(UiButton("退出", "quit", (next_x, 48, 82, 38)))
     for button in buttons:
         draw_button(panel, button)
 
+    if target_status:
+        draw_text(panel, target_status, (16, 94), target_status_color, 16)
+
     all_events = list(events)
-    visible_count = max(1, (panel_height - 118) // 22)
+    visible_count = max(1, (panel_height - 136) // 22)
     max_scroll = max(0, len(all_events) - visible_count)
     scroll_offset = max(0, min(scroll_offset, max_scroll))
     visible_events = all_events[scroll_offset : scroll_offset + visible_count]
 
     log_x = 16
-    log_y = 104
+    log_y = 122
     log_w = frame.shape[1] - 32
     log_h = panel_height - log_y - 14
     cv2.rectangle(panel, (log_x, log_y), (log_x + log_w, log_y + log_h), (31, 35, 41), -1)
@@ -1393,6 +1748,28 @@ def draw_event_panel(
         cv2.rectangle(panel, (bar_x, bar_top), (bar_x + 4, bar_top + bar_h), (48, 54, 63), -1)
         cv2.rectangle(panel, (bar_x, thumb_y), (bar_x + 4, thumb_y + thumb_h), (126, 144, 166), -1)
     return np.vstack([frame, panel]), buttons, max_scroll, visible_count
+
+
+def target_status_for_ui(
+    target_profile: TargetProfile,
+    tracker: CrossCameraTracker,
+    tracks_by_camera: list[list[Track]],
+) -> tuple[str, tuple[int, int, int]]:
+    if not target_profile.active or tracker.registered_target_id is None:
+        return "锁定状态：未锁定目标，点击检测框或使用按钮注册一根管子", (120, 190, 255)
+
+    target_id = tracker.registered_target_id
+    matched_parts: list[str] = []
+    for camera_id, tracks in enumerate(tracks_by_camera):
+        for track in tracks:
+            if track.global_id != target_id:
+                continue
+            sim_text = "" if track.last_target_similarity is None else f" t={track.last_target_similarity:.2f}"
+            matched_parts.append(f"摄像头{camera_id + 1}{sim_text}")
+
+    if matched_parts:
+        return f"锁定状态：G{target_id:03d} 正在匹配 | {', '.join(matched_parts)}", (120, 220, 150)
+    return f"锁定状态：G{target_id:03d} 已注册，当前暂未匹配，等待目标出现或跨镜头接力", (80, 190, 230)
 
 
 def offset_buttons(buttons: list[UiButton], offset_y: int) -> list[UiButton]:
@@ -1471,14 +1848,18 @@ def parse_roi(value: str) -> tuple[int, int, int, int]:
     return parts[0], parts[1], parts[2], parts[3]
 
 
-def parse_yolo_classes(value: str) -> Optional[list[int]]:
+def parse_class_ids(value: str, label: str = "class ids") -> Optional[list[int]]:
     if not value:
         return None
     try:
         classes = [int(part.strip()) for part in value.split(",") if part.strip()]
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("YOLO classes must be comma-separated class ids, such as 0,1,2.") from exc
+        raise argparse.ArgumentTypeError(f"{label} must be comma-separated class ids, such as 0,1,2.") from exc
     return classes or None
+
+
+def parse_yolo_classes(value: str) -> Optional[list[int]]:
+    return parse_class_ids(value, "YOLO classes")
 
 
 def parse_camera_index(value: str) -> Optional[int]:
@@ -1527,6 +1908,17 @@ def parse_view_order(value: str) -> tuple[int, int]:
     if text not in aliases:
         raise argparse.ArgumentTypeError("View order must be AB or BA.")
     return aliases[text]
+
+
+def build_initial_view_order(camera_count: int, requested_order: Iterable[int]) -> list[int]:
+    view_order: list[int] = []
+    for camera_id in requested_order:
+        if 0 <= camera_id < camera_count and camera_id not in view_order:
+            view_order.append(camera_id)
+    for camera_id in range(camera_count):
+        if camera_id not in view_order:
+            view_order.append(camera_id)
+    return view_order
 
 
 def parse_camera_scan_order(value: str) -> list[int]:
@@ -1611,39 +2003,54 @@ def resolve_camera_indexes(args: argparse.Namespace) -> list[int]:
             raise RuntimeError("两个摄像头索引不能相同。请使用不同索引，或使用 --cam-a auto --cam-b auto。")
         return [cam_a, cam_b]
 
-    selected: list[int] = []
-    if cam_a is not None:
-        selected.append(cam_a)
-    if cam_b is not None:
-        selected.append(cam_b)
-
-    needed = 2 - len(selected)
+    fixed_indexes = [index for index in (cam_a, cam_b) if index is not None]
+    needed = 2 - len(fixed_indexes)
     available = find_available_camera_indexes(
         args.probe_max,
         args.backend,
         args.camera_scan_order,
-        needed=needed,
+        needed=needed + len(fixed_indexes),
     )
 
-    for index in available:
-        if len(selected) >= 2:
-            break
-        if index not in selected:
-            selected.append(index)
+    auto_candidates = [index for index in available if index not in fixed_indexes]
+    if cam_a is None and auto_candidates:
+        cam_a = auto_candidates.pop(0)
+    if cam_b is None and auto_candidates:
+        cam_b = auto_candidates.pop(0)
 
-    if len(selected) < 2:
+    if cam_a is None or cam_b is None:
         raise RuntimeError(
             "自动选择摄像头失败：当前可用摄像头少于 2 个。"
             f" 可用索引={available}，可以先用 --probe 检查。"
         )
-    return selected[:2]
+    if cam_a == cam_b:
+        raise RuntimeError("两个摄像头索引不能相同。请使用不同索引，或使用 --cam-a auto --cam-b auto。")
+    return [cam_a, cam_b]
+
+
+def synthetic_camera_count(args: argparse.Namespace) -> int:
+    if args.camera_indexes is not None:
+        return len(args.camera_indexes)
+    return 2
+
+
+def synthetic_sources(count: int) -> list[SyntheticCamera]:
+    if not 1 <= count <= 3:
+        raise RuntimeError("内置模拟演示只支持 1 到 3 路摄像头。")
+    return [SyntheticCamera(camera_id) for camera_id in range(count)]
 
 
 def open_sources(args: argparse.Namespace):
     if args.demo:
-        return [SyntheticCamera(0), SyntheticCamera(1)]
+        return synthetic_sources(synthetic_camera_count(args))
 
-    camera_indexes = resolve_camera_indexes(args)
+    try:
+        camera_indexes = resolve_camera_indexes(args)
+    except RuntimeError:
+        if args.fallback_demo:
+            print("自动选择物理摄像头失败，已切换到内置模拟演示。")
+            return synthetic_sources(2)
+        raise
     sources = []
     opened_labels = []
     for source_id, camera_index in enumerate(camera_indexes):
@@ -1651,9 +2058,9 @@ def open_sources(args: argparse.Namespace):
         if cap is None:
             for source in sources:
                 source.release()
-            if args.fallback_demo and len(camera_indexes) == 2:
-                print("无法同时打开两个物理摄像头，已切换到内置模拟演示。")
-                return [SyntheticCamera(0), SyntheticCamera(1)]
+            if args.fallback_demo:
+                print(f"无法同时打开 {len(camera_indexes)} 个物理摄像头，已切换到内置模拟演示。")
+                return synthetic_sources(len(camera_indexes))
             raise RuntimeError(
                 f"无法打开摄像头索引 {camera_index}。已选择索引={camera_indexes}。"
                 " 可以先用 --probe 检查索引，或使用 --backend auto / --fallback-demo。"
@@ -1670,7 +2077,7 @@ def roi_for_camera(args: argparse.Namespace, camera_id: int) -> Optional[tuple[i
         return args.roi_a
     if camera_id == 1:
         return args.roi_b
-    return args.roi_b
+    return args.roi_c
 
 
 def build_detectors(args: argparse.Namespace, camera_count: int):
@@ -1714,7 +2121,74 @@ def build_detectors(args: argparse.Namespace, camera_count: int):
             for camera_id in range(camera_count)
         ]
 
+    if args.detector == "rfdetr":
+        if args.rfdetr_num_classes < 0:
+            raise RuntimeError("--rfdetr-num-classes 不能小于 0。")
+        if not 0.0 <= args.rfdetr_conf <= 1.0:
+            raise RuntimeError("--rfdetr-conf 必须在 0 到 1 之间。")
+        if args.rfdetr_category_id_offset < 0:
+            raise RuntimeError("--rfdetr-category-id-offset 不能小于 0。")
+        classes = parse_class_ids(args.rfdetr_classes, "RF-DETR classes")
+        return [
+            RfDetrDetector(
+                camera_id,
+                model_size=args.rfdetr_size,
+                weights=args.rfdetr_weights,
+                num_classes=args.rfdetr_num_classes,
+                confidence=args.rfdetr_conf,
+                classes=classes,
+                class_id_mode=args.rfdetr_class_id_mode,
+                category_id_offset=args.rfdetr_category_id_offset,
+                roi=roi_for_camera(args, camera_id),
+                single_object=args.single_object,
+                max_detections=args.max_detections,
+                max_area_ratio=args.max_area_ratio,
+                max_shape_ratio=args.max_shape_ratio,
+                min_long_side=args.min_long_side,
+                max_short_side=args.max_short_side,
+                optimize=args.rfdetr_optimize,
+            )
+            for camera_id in range(camera_count)
+        ]
+
     raise ValueError(f"Unsupported detector: {args.detector}")
+
+
+def run_config_message(args: argparse.Namespace, camera_count: int) -> str:
+    parts = [
+        f"detector={args.detector}",
+        f"camera_count={camera_count}",
+        f"backend={args.backend}",
+        f"max_detections={args.max_detections}",
+        f"single_object={int(args.single_object)}",
+        f"track_all_after_register={int(args.track_all_after_register)}",
+        f"target_threshold={args.target_threshold:.3f}",
+        f"target_update_alpha={args.target_update_alpha:.3f}",
+        f"cross_threshold={args.cross_threshold:.3f}",
+    ]
+    if args.detector == "yolo":
+        parts.extend(
+            [
+                f"yolo_model={args.yolo_model}",
+                f"yolo_conf={args.yolo_conf:.3f}",
+                f"yolo_iou={args.yolo_iou:.3f}",
+                f"yolo_imgsz={args.yolo_imgsz}",
+                f"yolo_device={args.yolo_device or 'auto'}",
+                f"yolo_classes={args.yolo_classes or 'all'}",
+            ]
+        )
+    if args.detector == "rfdetr":
+        parts.extend(
+            [
+                f"rfdetr_size={args.rfdetr_size}",
+                f"rfdetr_weights={args.rfdetr_weights or 'default'}",
+                f"rfdetr_num_classes={args.rfdetr_num_classes}",
+                f"rfdetr_classes={args.rfdetr_classes or 'all'}",
+                f"rfdetr_conf={args.rfdetr_conf:.3f}",
+                f"rfdetr_class_id_mode={args.rfdetr_class_id_mode}",
+            ]
+        )
+    return "; ".join(parts)
 
 
 def probe_cameras(max_index: int, backend: str) -> None:
@@ -1743,6 +2217,7 @@ def run(args: argparse.Namespace) -> int:
     camera_count = len(sources)
     detectors = build_detectors(args, camera_count)
     print(f"检测模式：{args.detector}")
+    event_logger.write_run_config(time.time(), run_config_message(args, camera_count))
     tracker = CrossCameraTracker(
         camera_count=camera_count,
         max_missed=args.max_missed,
@@ -1753,7 +2228,7 @@ def run(args: argparse.Namespace) -> int:
     )
     target_profile = TargetProfile(max_templates=args.target_template_limit)
     ui_state = UiState()
-    view_order = list(args.view_order) if camera_count == 2 else list(range(camera_count))
+    view_order = build_initial_view_order(camera_count, args.view_order)
     flip_horizontal = [False for _ in range(camera_count)]
     if camera_count >= 1:
         flip_horizontal[0] = args.flip_a
@@ -1803,11 +2278,14 @@ def run(args: argparse.Namespace) -> int:
                     args.target_threshold,
                     args.target_update_alpha,
                     args.track_all_after_register,
+                    stick_distance=args.target_stick_distance,
+                    switch_margin=args.target_switch_margin,
                     log_dir=log_dir,
                     now=now,
                     sample_min_similarity=args.target_sample_min_similarity,
                     sample_min_interval=args.target_sample_min_interval,
                     sample_max_count=args.target_sample_max_count,
+                    can_claim_target=lambda detection: tracker._can_claim_registered_target(detection, now),
                 )
                 for raw_detections in raw_detections_by_camera
             ]
@@ -1842,12 +2320,19 @@ def run(args: argparse.Namespace) -> int:
                 canvas = np.hstack(displayed_frames)
                 canvas = pad_canvas_width(canvas, 1080)
                 content_height = canvas.shape[0]
+                target_status, target_status_color = target_status_for_ui(
+                    target_profile,
+                    tracker,
+                    tracks_by_camera,
+                )
                 canvas, buttons, max_event_scroll, _visible_events = draw_event_panel(
                     canvas,
                     tracker.events,
                     ui_state.event_scroll_offset,
                     view_order,
                     flip_horizontal,
+                    target_status,
+                    target_status_color,
                 )
                 ui_state.max_event_scroll = max_event_scroll
                 ui_state.event_scroll_offset = min(ui_state.event_scroll_offset, max_event_scroll)
@@ -1858,16 +2343,9 @@ def run(args: argparse.Namespace) -> int:
                 canvas_click = ui_state.pending_canvas_click
                 ui_state.pending_action = None
                 ui_state.pending_canvas_click = None
-                if key in (27, ord("q")):
-                    action = "quit"
-                elif key in (ord("r"), ord("1")):
-                    action = "register_left"
-                elif key in (ord("t"), ord("2")):
-                    action = "register_right"
-                elif key in (ord("m"), ord("3")):
-                    action = "manual_left"
-                elif key in (ord("n"), ord("4")):
-                    action = "manual_right"
+                key_action = action_from_key(key)
+                if key_action is not None:
+                    action = key_action
 
                 if action == "quit":
                     break
@@ -1884,6 +2362,11 @@ def run(args: argparse.Namespace) -> int:
                     flip_horizontal[camera_id] = not flip_horizontal[camera_id]
                     state = "开启" if flip_horizontal[camera_id] else "关闭"
                     tracker.events.appendleft(f"{time.strftime('%H:%M:%S')} 已{state}右侧画面水平翻转")
+                if action == "flip_third" and len(view_order) >= 3:
+                    camera_id = view_order[2]
+                    flip_horizontal[camera_id] = not flip_horizontal[camera_id]
+                    state = "开启" if flip_horizontal[camera_id] else "关闭"
+                    tracker.events.appendleft(f"{time.strftime('%H:%M:%S')} 已{state}第三路画面水平翻转")
                 if action == "register_left":
                     camera_id = displayed_camera_index(view_order, "left")
                     register_best_detection(
@@ -1906,6 +2389,17 @@ def run(args: argparse.Namespace) -> int:
                         log_dir,
                         time.time(),
                     )
+                if action == "register_third" and len(view_order) >= 3:
+                    camera_id = view_order[2]
+                    register_best_detection(
+                        target_profile,
+                        tracker,
+                        event_logger,
+                        frames_by_camera[camera_id][3],
+                        camera_id,
+                        log_dir,
+                        time.time(),
+                    )
                 if action == "manual_left":
                     camera_id = displayed_camera_index(view_order, "left")
                     selected = select_target_from_frame(frames_by_camera[camera_id][0], camera_id)
@@ -1914,6 +2408,12 @@ def run(args: argparse.Namespace) -> int:
                         register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, time.time())
                 if action == "manual_right" and len(view_order) >= 2:
                     camera_id = displayed_camera_index(view_order, "right")
+                    selected = select_target_from_frame(frames_by_camera[camera_id][0], camera_id)
+                    if selected is not None:
+                        crop, bbox = selected
+                        register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, time.time())
+                if action == "manual_third" and len(view_order) >= 3:
+                    camera_id = view_order[2]
                     selected = select_target_from_frame(frames_by_camera[camera_id][0], camera_id)
                     if selected is not None:
                         crop, bbox = selected
@@ -1984,11 +2484,11 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="OpenCV camera backend. auto tries dshow, msmf, then any.",
     )
-    parser.add_argument("--demo", action="store_true", help="Use synthetic two-camera demo.")
+    parser.add_argument("--demo", action="store_true", help="Use synthetic 1-3 camera demo; default is two cameras.")
     parser.add_argument(
         "--fallback-demo",
         action="store_true",
-        help="Use the synthetic demo if both physical cameras cannot be opened.",
+        help="Use the synthetic demo if selected physical cameras cannot be opened.",
     )
     parser.add_argument("--headless", action="store_true", help="Disable GUI window.")
     parser.add_argument("--frames", type=int, default=0, help="Stop after N frames; 0 means manual stop.")
@@ -2002,14 +2502,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--camera-scan-order",
         type=parse_camera_scan_order,
-        default=parse_camera_scan_order("1,2,0,3,4,5"),
-        help="Preferred camera indexes for auto selection, such as 1,2,0,3,4,5.",
+        default=parse_camera_scan_order("1,3,2,0,4,5"),
+        help="Preferred camera indexes for auto selection, such as 1,3,2,0,4,5.",
     )
     parser.add_argument(
         "--detector",
-        choices=("motion", "yolo"),
+        choices=("motion", "yolo", "rfdetr"),
         default="motion",
-        help="Detection backend. motion is the current stable MVP; yolo uses an Ultralytics model.",
+        help="Detection backend. motion is the stable MVP; yolo uses Ultralytics; rfdetr uses Roboflow RF-DETR.",
     )
     parser.add_argument("--min-area", type=int, default=900, help="Minimum moving contour area.")
     parser.add_argument(
@@ -2036,6 +2536,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-frames", type=int, default=20, help="Frames used to stabilize background.")
     parser.add_argument("--roi-a", type=parse_roi, help="Camera A ROI as x,y,w,h after resize to 640x360.")
     parser.add_argument("--roi-b", type=parse_roi, help="Camera B ROI as x,y,w,h after resize to 640x360.")
+    parser.add_argument("--roi-c", type=parse_roi, help="Camera C ROI as x,y,w,h after resize to 640x360.")
     parser.add_argument(
         "--yolo-model",
         default="yolov8n.pt",
@@ -2049,6 +2550,46 @@ def parse_args() -> argparse.Namespace:
         "--yolo-classes",
         default="",
         help="Optional comma-separated YOLO class ids to keep, for example 0,1. Leave empty for custom pipe models.",
+    )
+    parser.add_argument(
+        "--rfdetr-size",
+        choices=("nano", "small", "base", "medium", "large", "xlarge", "2xlarge"),
+        default="nano",
+        help="RF-DETR model size for --detector rfdetr.",
+    )
+    parser.add_argument(
+        "--rfdetr-weights",
+        default="",
+        help="Optional RF-DETR checkpoint path, usually output/checkpoint_best_ema.pth after fine-tuning.",
+    )
+    parser.add_argument(
+        "--rfdetr-num-classes",
+        type=int,
+        default=0,
+        help="Optional RF-DETR class count, useful when loading a fine-tuned one-class checkpoint.",
+    )
+    parser.add_argument("--rfdetr-conf", type=float, default=0.35, help="RF-DETR confidence threshold.")
+    parser.add_argument(
+        "--rfdetr-classes",
+        default="",
+        help="Optional comma-separated YOLO-style class ids to keep after RF-DETR class-id mapping. Empty keeps all classes.",
+    )
+    parser.add_argument(
+        "--rfdetr-class-id-mode",
+        choices=("auto", "zero", "category"),
+        default="auto",
+        help="How to map RF-DETR class ids before --rfdetr-classes filtering.",
+    )
+    parser.add_argument(
+        "--rfdetr-category-id-offset",
+        type=int,
+        default=1,
+        help="COCO category id offset used when mapping RF-DETR category ids back to YOLO class ids.",
+    )
+    parser.add_argument(
+        "--rfdetr-optimize",
+        action="store_true",
+        help="Call RF-DETR optimize_for_inference() when the installed rfdetr package supports it.",
     )
     parser.add_argument("--log-dir", default="runs", help="Directory for per-run CSV event logs.")
     parser.add_argument("--no-log", action="store_true", help="Disable CSV event logging.")
@@ -2083,6 +2624,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=6,
         help="Max reliable templates kept for the registered target.",
+    )
+    parser.add_argument(
+        "--target-stick-distance",
+        type=float,
+        default=120.0,
+        help="Prefer the previous registered-target location within this pixel distance; 0 disables sticky selection.",
+    )
+    parser.add_argument(
+        "--target-switch-margin",
+        type=float,
+        default=0.08,
+        help="Only switch away from the nearby registered target when another candidate is this much more similar.",
     )
     parser.add_argument(
         "--target-sample-max-count",

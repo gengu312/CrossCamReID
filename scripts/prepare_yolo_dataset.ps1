@@ -2,13 +2,18 @@ param(
     [string]$SourceImages,
     [string]$SourceLabels,
     [string]$DatasetRoot = "datasets/pipe_yolo",
+    [string]$ClassNames = "pipe",
     [double]$ValRatio = 0.2,
     [int]$Seed = 42,
     [switch]$Clean,
-    [switch]$AllowNegative
+    [switch]$AllowNegative,
+    [switch]$DropConfidenceColumn
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONIOENCODING = "utf-8"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
@@ -38,6 +43,7 @@ $AppArgs = @(
     "--source-images", $SourceImages,
     "--source-labels", $SourceLabels,
     "--dataset-root", $DatasetRoot,
+    "--class-names", $ClassNames,
     "--val-ratio", "$ValRatio",
     "--seed", "$Seed"
 )
@@ -48,6 +54,10 @@ if ($Clean) {
 
 if ($AllowNegative) {
     $AppArgs += "--allow-negative"
+}
+
+if ($DropConfidenceColumn) {
+    $AppArgs += "--drop-confidence-column"
 }
 
 & $PythonExe @AppArgs

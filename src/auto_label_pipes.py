@@ -309,11 +309,23 @@ def main() -> int:
     image_dir = Path(args.images)
     label_dir = Path(args.labels)
     preview_dir = Path(args.previews)
+    if args.min_area_ratio <= 0:
+        print(f"自动初标失败：--min-area-ratio 必须大于 0，当前为 {args.min_area_ratio}")
+        return 2
+    if not image_dir.exists():
+        print(f"自动初标失败：图片目录不存在：{image_dir}")
+        return 2
+    if not image_dir.is_dir():
+        print(f"自动初标失败：图片路径不是目录：{image_dir}")
+        return 2
     label_dir.mkdir(parents=True, exist_ok=True)
     if args.preview:
         preview_dir.mkdir(parents=True, exist_ok=True)
 
     images = sorted(path for path in image_dir.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS)
+    if not images:
+        print(f"自动初标失败：图片目录中没有可处理图片：{image_dir}")
+        return 2
     total_boxes = 0
     written = 0
     skipped = 0

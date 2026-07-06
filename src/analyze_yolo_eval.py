@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -82,6 +83,8 @@ def parse_args() -> argparse.Namespace:
         help="Count a matched prediction as too large if pred_area / gt_area exceeds this ratio.",
     )
     parser.add_argument("--report-csv", help="Optional path to save per-image CSV report.")
+    parser.add_argument("--summary-json", help="Optional path to save a machine-readable summary.")
+    parser.add_argument("--summary-md", help="Optional path to save a short Markdown summary.")
     parser.add_argument("--max-examples", type=int, default=12, help="Max issue examples printed to the console.")
     parser.add_argument("--min-precision", type=float, help="Fail if precision is below this value.")
     parser.add_argument("--min-recall", type=float, help="Fail if recall is below this value.")
@@ -96,16 +99,27 @@ def read_yolo_labels(path: Path, conf_threshold: float = 0.0) -> list[YoloBox]:
         return []
 
     boxes: list[YoloBox] = []
-    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_no, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
         stripped = line.strip()
         if not stripped:
             continue
         parts = stripped.split()
         if len(parts) not in (5, 6):
-            raise ValueError(f"{path}:{line_no} YOLO label should have 5 or 6 columns.")
-        cls = int(float(parts[0]))
-        cx, cy, w, h = (float(value) for value in parts[1:5])
-        conf = float(parts[5]) if len(parts) == 6 else 1.0
+            raise RuntimeError(f"{path}:{line_no} YOLO 标签列数应为 5 或 6，实际为 {len(parts)}。")
+        try:
+            cls = int(float(parts[0]))
+            cx, cy, w, h = (float(value) for value in parts[1:5])
+            conf = float(parts[5]) if len(parts) == 6 else 1.0
+        except ValueError as exc:
+            raise RuntimeError(f"{path}:{line_no} YOLO 标签字段不是数字：{stripped}") from exc
+        if cls < 0:
+            raise RuntimeError(f"{path}:{line_no} YOLO 类别不能小于 0：{cls}")
+        if not all(0.0 <= value <= 1.0 for value in (cx, cy, w, h)):
+            raise RuntimeError(f"{path}:{line_no} YOLO 坐标不在 0..1 范围内：{stripped}")
+        if w <= 0.0 or h <= 0.0:
+            raise RuntimeError(f"{path}:{line_no} YOLO width/height 必须大于 0：{stripped}")
+        if conf < 0.0:
+            raise RuntimeError(f"{path}:{line_no} YOLO 置信度不能小于 0：{conf}")
         if conf < conf_threshold:
             continue
         boxes.append(YoloBox(cls=cls, cx=cx, cy=cy, w=w, h=h, conf=conf))
@@ -248,6 +262,119 @@ def write_report(path: Path, results: list[ImageResult]) -> None:
             )
 
 
+def issue_examples(results: list[ImageResult], max_examples: int) -> list[ImageResult]:
+    issue_rows = [
+        item
+        for item in results
+        if item.false_positive_count > 0 or item.false_negative_count > 0 or item.oversized_count > 0
+    ]
+    return issue_rows[: max(0, max_examples)]
+
+
+def summary_to_dict(summary: EvalSummary) -> dict[str, object]:
+    return {
+        "image_count": summary.image_count,
+        "gt_count": summary.gt_count,
+        "pred_count": summary.pred_count,
+        "matched_count": summary.matched_count,
+        "false_positive_count": summary.false_positive_count,
+        "false_negative_count": summary.false_negative_count,
+        "images_with_false_positive": summary.images_with_false_positive,
+        "images_with_false_negative": summary.images_with_false_negative,
+        "images_without_predictions": summary.images_without_predictions,
+        "oversized_count": summary.oversized_count,
+        "avg_iou": summary.avg_iou,
+        "precision": summary.precision,
+        "recall": summary.recall,
+    }
+
+
+def image_result_to_dict(result: ImageResult) -> dict[str, object]:
+    return {
+        "image": result.stem,
+        "gt": result.gt_count,
+        "pred": result.pred_count,
+        "matched": result.matched_count,
+        "false_positive": result.false_positive_count,
+        "false_negative": result.false_negative_count,
+        "oversized": result.oversized_count,
+        "avg_iou": result.avg_iou,
+    }
+
+
+def write_summary_json(
+    path: Path,
+    summary: EvalSummary,
+    results: list[ImageResult],
+    failures: list[str],
+    args: argparse.Namespace,
+) -> None:
+    payload = {
+        "passed": not failures,
+        "failures": failures,
+        "dataset_root": args.dataset_root,
+        "split": args.split,
+        "images_dir": args.images_dir,
+        "labels_dir": args.labels_dir,
+        "pred_labels": args.pred_labels,
+        "iou_threshold": args.iou_threshold,
+        "conf_threshold": args.conf_threshold,
+        "oversize_ratio": args.oversize_ratio,
+        "summary": summary_to_dict(summary),
+        "issue_examples": [image_result_to_dict(item) for item in issue_examples(results, args.max_examples)],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def write_summary_markdown(
+    path: Path,
+    summary: EvalSummary,
+    results: list[ImageResult],
+    failures: list[str],
+    args: argparse.Namespace,
+) -> None:
+    avg_iou = "无" if summary.avg_iou is None else f"{summary.avg_iou:.3f}"
+    lines = [
+        "# 检测评估摘要",
+        "",
+        f"- 数据集：`{args.dataset_root}`",
+        f"- 数据划分：{args.split}",
+        f"- 预测标签：`{args.pred_labels}`",
+        f"- 图片数：{summary.image_count}",
+        f"- 标注目标数：{summary.gt_count}",
+        f"- 预测目标数：{summary.pred_count}",
+        f"- 匹配成功数：{summary.matched_count}",
+        f"- Precision：{summary.precision:.3f}",
+        f"- Recall：{summary.recall:.3f}",
+        f"- 平均 IoU：{avg_iou}",
+        f"- 误检数：{summary.false_positive_count}",
+        f"- 漏检数：{summary.false_negative_count}",
+        f"- 框偏大匹配数：{summary.oversized_count}",
+        "",
+        "## 问题样例",
+        "",
+    ]
+    examples = issue_examples(results, args.max_examples)
+    if examples:
+        for item in examples:
+            item_iou = "无" if item.avg_iou is None else f"{item.avg_iou:.2f}"
+            lines.append(
+                f"- {item.stem}：标注={item.gt_count}，预测={item.pred_count}，"
+                f"匹配={item.matched_count}，误检={item.false_positive_count}，"
+                f"漏检={item.false_negative_count}，框偏大={item.oversized_count}，平均IoU={item_iou}"
+            )
+    else:
+        lines.append("- 无明显问题样例。")
+
+    if failures:
+        lines.extend(["", "## 未通过原因", ""])
+        lines.extend(f"- {failure}" for failure in failures)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def print_summary(summary: EvalSummary, results: list[ImageResult], max_examples: int) -> None:
     print(f"图片数：{summary.image_count}")
     print(f"标注目标数：{summary.gt_count}")
@@ -263,17 +390,13 @@ def print_summary(summary: EvalSummary, results: list[ImageResult], max_examples
     print(f"Precision：{summary.precision:.3f}")
     print(f"Recall：{summary.recall:.3f}")
 
-    issue_rows = [
-        item
-        for item in results
-        if item.false_positive_count > 0 or item.false_negative_count > 0 or item.oversized_count > 0
-    ]
+    issue_rows = issue_examples(results, max_examples)
     if not issue_rows:
         print("问题样例：无")
         return
 
     print("问题样例：")
-    for item in issue_rows[:max(0, max_examples)]:
+    for item in issue_rows:
         avg_iou = "无" if item.avg_iou is None else f"{item.avg_iou:.2f}"
         print(
             f"- {item.stem}: 标注={item.gt_count}, 预测={item.pred_count}, "
@@ -295,6 +418,23 @@ def quality_failures(summary: EvalSummary, args: argparse.Namespace) -> list[str
     return failures
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    if not 0.0 <= args.iou_threshold <= 1.0:
+        raise RuntimeError("--iou-threshold 必须在 0 到 1 之间。")
+    if not 0.0 <= args.conf_threshold <= 1.0:
+        raise RuntimeError("--conf-threshold 必须在 0 到 1 之间。")
+    if args.oversize_ratio <= 0:
+        raise RuntimeError("--oversize-ratio 必须大于 0。")
+    if args.min_precision is not None and not 0.0 <= args.min_precision <= 1.0:
+        raise RuntimeError("--min-precision 必须在 0 到 1 之间。")
+    if args.min_recall is not None and not 0.0 <= args.min_recall <= 1.0:
+        raise RuntimeError("--min-recall 必须在 0 到 1 之间。")
+    if args.max_false_positives is not None and args.max_false_positives < 0:
+        raise RuntimeError("--max-false-positives 不能小于 0。")
+    if args.max_false_negatives is not None and args.max_false_negatives < 0:
+        raise RuntimeError("--max-false-negatives 不能小于 0。")
+
+
 def main() -> int:
     args = parse_args()
     dataset_root = Path(args.dataset_root)
@@ -302,30 +442,35 @@ def main() -> int:
     labels_dir = Path(args.labels_dir) if args.labels_dir else dataset_root / "labels" / args.split
     pred_labels_dir = Path(args.pred_labels)
 
-    if not labels_dir.exists():
-        raise FileNotFoundError(f"Ground-truth label directory was not found: {labels_dir}")
-    if not pred_labels_dir.exists():
-        message = f"预测标签目录不存在：{pred_labels_dir}"
-        if args.require_predictions:
+    try:
+        validate_args(args)
+        if not labels_dir.exists():
+            raise RuntimeError(f"标注标签目录不存在：{labels_dir}")
+        if not pred_labels_dir.exists():
+            message = f"预测标签目录不存在：{pred_labels_dir}"
+            if args.require_predictions:
+                print(message)
+                return 2
             print(message)
-            return 2
-        print(message)
-        print("请先运行：.\\evaluate_pipe_yolo.bat -PredictOnly")
-        return 0
+            print("请先运行：.\\evaluate_pipe_yolo.bat -PredictOnly")
+            return 0
 
-    results: list[ImageResult] = []
-    all_ious: list[float] = []
-    for stem in image_stems(images_dir):
-        result, ious = match_image(
-            stem,
-            labels_dir,
-            pred_labels_dir,
-            args.iou_threshold,
-            args.conf_threshold,
-            args.oversize_ratio,
-        )
-        results.append(result)
-        all_ious.extend(ious)
+        results: list[ImageResult] = []
+        all_ious: list[float] = []
+        for stem in image_stems(images_dir):
+            result, ious = match_image(
+                stem,
+                labels_dir,
+                pred_labels_dir,
+                args.iou_threshold,
+                args.conf_threshold,
+                args.oversize_ratio,
+            )
+            results.append(result)
+            all_ious.extend(ious)
+    except (OSError, RuntimeError) as exc:
+        print(f"YOLO 评估分析失败：{exc}")
+        return 2
 
     summary = summarize(results, all_ious)
     print_summary(summary, results, args.max_examples)
@@ -335,6 +480,15 @@ def main() -> int:
         print(f"CSV 报告：{report_path}")
 
     failures = quality_failures(summary, args)
+    if args.summary_json:
+        summary_json = Path(args.summary_json)
+        write_summary_json(summary_json, summary, results, failures, args)
+        print(f"JSON 摘要：{summary_json}")
+    if args.summary_md:
+        summary_md = Path(args.summary_md)
+        write_summary_markdown(summary_md, summary, results, failures, args)
+        print(f"Markdown 摘要：{summary_md}")
+
     if failures:
         print("检测质量验收：未通过")
         for failure in failures:
