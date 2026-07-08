@@ -86,6 +86,7 @@ param(
     [switch]$CollectTargetSamplesAfterRun,
     [string]$TargetSampleReviewDir = "",
     [switch]$TargetSamplePreview,
+    [switch]$PrintOnly,
     [switch]$SkipInstall
 )
 
@@ -285,7 +286,7 @@ function Add-TargetSampleReviewToReport {
     $Lines | Add-Content -LiteralPath $ReportPath -Encoding UTF8
 }
 
-if (-not $SkipInstall) {
+if (-not $SkipInstall -and -not $PrintOnly) {
     & $PythonExe -c "import cv2, numpy, PIL" *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Utf8Host "5q2j5Zyo5LuOIHJlcXVpcmVtZW50cy50eHQg5a6J6KOFIFB5dGhvbiDkvp3otZYuLi4="
@@ -453,6 +454,12 @@ if ($SelectCameras) {
     }
     if ($SkipInstall) {
         Add-SelectorExtraArg "-SkipInstall"
+    }
+    if ($PrintOnly) {
+        Write-Host "Camera selector command:"
+        Write-Host "$PythonExe $($SelectorArgs -join ' ')"
+        Write-Host "PrintOnly: selector was not started."
+        exit 0
     }
     & $PythonExe @SelectorArgs
     exit $LASTEXITCODE
@@ -669,10 +676,19 @@ function Show-LaunchSummary {
 
 $RunExitCode = 0
 
-Write-Utf8Host "5q2j5Zyo6L+Q6KGMIENyb3NzQ2FtUmVJRC4uLg=="
+if ($PrintOnly) {
+    Write-Host "Preparing CrossCamReID launch..."
+} else {
+    Write-Utf8Host "5q2j5Zyo6L+Q6KGMIENyb3NzQ2FtUmVJRC4uLg=="
+}
 Show-LaunchSummary
 Write-Host "$PythonExe $($AppArgs -join ' ')"
 Write-Host ""
+
+if ($PrintOnly) {
+    Write-Host "PrintOnly: CrossCamReID was not started."
+    exit 0
+}
 
 & $PythonExe @AppArgs
 $AppExitCode = $LASTEXITCODE

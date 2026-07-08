@@ -2287,6 +2287,36 @@ Invoke-Step "Launcher fallback demo" {
         -SkipInstall
 }
 
+Invoke-Step "Launcher print-only summary" {
+    $PrintOnlyLogDir = Join-Path $SmokeRoot "runs_print_only"
+    $PrintOnlyOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_crosscam.ps1 `
+        -Demo `
+        -PipeMode `
+        -Headless `
+        -Frames 1 `
+        -LogDir $PrintOnlyLogDir `
+        -PrintOnly 2>&1
+    $PrintOnlyExit = $LASTEXITCODE
+    $PrintOnlyOutput | ForEach-Object { Write-Host $_ }
+    if ($PrintOnlyExit -ne 0) {
+        exit $PrintOnlyExit
+    }
+    $PrintOnlyText = $PrintOnlyOutput | Out-String
+    if (
+        $PrintOnlyText -notmatch "Preparing CrossCamReID launch" -or
+        $PrintOnlyText -notmatch "Launch summary:" -or
+        $PrintOnlyText -notmatch "detector: yolo" -or
+        $PrintOnlyText -notmatch "PrintOnly: CrossCamReID was not started"
+    ) {
+        Write-Host "Expected launcher PrintOnly output to include summary and not-started message."
+        exit 2
+    }
+    if (Test-Path -LiteralPath $PrintOnlyLogDir) {
+        Write-Host "Expected launcher PrintOnly not to create log directory: $PrintOnlyLogDir"
+        exit 2
+    }
+}
+
 Invoke-Step "Training script check branch" {
     $PreparedDataYaml = Join-Path $DatasetRoot "data.yaml"
     & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\train_pipe_yolo.ps1 `
