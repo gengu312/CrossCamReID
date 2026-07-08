@@ -614,9 +614,63 @@ if ($RequireMatch) {
     $AppArgs += "--require-match"
 }
 
+function Format-ExistingPathStatus {
+    param([string]$PathValue)
+
+    if ($PathValue -eq "") {
+        return "not_set"
+    }
+    if (Test-Path -LiteralPath $PathValue) {
+        return "found"
+    }
+    return "missing"
+}
+
+function Show-LaunchSummary {
+    Write-Host ""
+    Write-Host "Launch summary:"
+    if ($Probe) {
+        Write-Host "  mode: probe"
+        Write-Host "  cameras: backend=$Backend, probe_max=$ProbeMax"
+        return
+    }
+
+    if ($Demo) {
+        $ModeLabel = "demo"
+    } else {
+        $ModeLabel = "camera"
+    }
+    if ($PipeMode) {
+        $ModeLabel = "$ModeLabel + PipeMode"
+    }
+    Write-Host "  mode: $ModeLabel"
+
+    if ($CameraIndexes -ne "") {
+        Write-Host "  cameras: indexes=$CameraIndexes, backend=$Backend"
+    } elseif (-not $Demo) {
+        Write-Host "  cameras: A=$CamA, B=$CamB, scan_order=$CameraScanOrder, backend=$Backend"
+    } else {
+        Write-Host "  cameras: demo_source"
+    }
+
+    Write-Host "  detector: $Detector, max_detections=$MaxDetections"
+    if ($Detector -eq "yolo") {
+        $YoloModelStatus = Format-ExistingPathStatus $YoloModel
+        $YoloDeviceText = if ($YoloDevice -ne "") { $YoloDevice } else { "auto" }
+        Write-Host "  yolo: model=$YoloModel ($YoloModelStatus), conf=$YoloConf, iou=$YoloIou, imgsz=$YoloImgsz, device=$YoloDeviceText"
+    } elseif ($Detector -eq "rfdetr") {
+        $RfDetrWeightsStatus = Format-ExistingPathStatus $RfDetrWeights
+        Write-Host "  rfdetr: size=$RfDetrSize, weights=$RfDetrWeights ($RfDetrWeightsStatus), classes=$RfDetrNumClasses, conf=$RfDetrConf"
+    }
+    Write-Host "  target: threshold=$TargetThreshold, update_alpha=$TargetUpdateAlpha, track_all_after_register=$TrackAllAfterRegister"
+    Write-Host "  view: order=$ViewOrder, flip_a=$($FlipA -or $FlipBoth), flip_b=$($FlipB -or $FlipBoth), flip_c=$FlipC"
+    Write-Host "  output: log_dir=$LogDir"
+}
+
 $RunExitCode = 0
 
 Write-Utf8Host "5q2j5Zyo6L+Q6KGMIENyb3NzQ2FtUmVJRC4uLg=="
+Show-LaunchSummary
 Write-Host "$PythonExe $($AppArgs -join ' ')"
 Write-Host ""
 

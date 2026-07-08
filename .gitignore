@@ -15,8 +15,12 @@ runs_test/
 runs_yolo/
 runs_yolo_eval/
 runs_yolo_label_opt/
+runs_rfdetr/
+runs_rfdetr_eval/
+runs_detector_compare/
 dataset_raw/
 datasets/pipe_yolo_candidate_*/
+datasets/pipe_rfdetr/
 datasets/pipe_yolo/images/**/*
 datasets/pipe_yolo/labels/**/*
 !datasets/pipe_yolo/images/**/

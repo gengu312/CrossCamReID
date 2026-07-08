@@ -2184,6 +2184,10 @@ Invoke-Step "Launcher auto analysis" {
         exit $LauncherExitCode
     }
     $LauncherOutputText = $LauncherOutput | Out-String
+    if ($LauncherOutputText -notmatch "Launch summary:" -or $LauncherOutputText -notmatch "detector: motion") {
+        Write-Host "Expected launcher output to include launch summary."
+        exit 2
+    }
     if ($LauncherOutputText -notmatch "Run analysis quick summary" -or $LauncherOutputText -notmatch "handoff_ok") {
         Write-Host "Expected launcher output to include quick target-lock summary."
         exit 2
@@ -2574,7 +2578,17 @@ Invoke-Step "RF-DETR evaluation script check branch" {
 
 if (-not $SkipYolo) {
     Invoke-Step "YOLO detector smoke path" {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_crosscam.ps1 -Demo -PipeMode -Headless -Frames 1 -LogDir $RunLogDir -SkipInstall
+        $YoloSmokeOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_crosscam.ps1 -Demo -PipeMode -Headless -Frames 1 -LogDir $RunLogDir -SkipInstall 2>&1
+        $YoloSmokeExit = $LASTEXITCODE
+        $YoloSmokeOutput | ForEach-Object { Write-Host $_ }
+        if ($YoloSmokeExit -ne 0) {
+            exit $YoloSmokeExit
+        }
+        $YoloSmokeText = $YoloSmokeOutput | Out-String
+        if ($YoloSmokeText -notmatch "Launch summary:" -or $YoloSmokeText -notmatch "detector: yolo") {
+            Write-Host "Expected YOLO smoke output to include launch summary."
+            exit 2
+        }
     }
 }
 

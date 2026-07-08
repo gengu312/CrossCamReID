@@ -33,7 +33,7 @@ function Find-Python {
 }
 
 if (-not $SourceImages -or -not $SourceLabels) {
-    Write-Host "Usage: .\prepare_yolo_dataset.bat -SourceImages <images_dir> -SourceLabels <labels_dir> [-Clean]"
+    Write-Host "Usage: .\prepare_yolo_dataset.bat -SourceImages <images_dir> -SourceLabels <labels_dir> [-DatasetRoot <dir>] [-ClassNames pipe] [-ValRatio 0.2] [-Clean] [-AllowNegative] [-DropConfidenceColumn]"
     exit 2
 }
 
