@@ -1928,6 +1928,7 @@ Invoke-Step "Analyze handoff log" {
         --max-new-after-register 0 `
         --max-target-switches 0 `
         --max-target-distance 20 `
+        --max-target-jumps 0 `
         --min-cross-camera-ids 1 `
         --min-target-samples 2 `
         --min-match-samples 1 `
@@ -1958,6 +1959,10 @@ Invoke-Step "Analyze handoff log" {
     }
     if ($Summary.target_sample_missing_image_count -ne 0) {
         Write-Host "Expected target sample images to exist."
+        exit 2
+    }
+    if ($Summary.target_large_jump_count -ne 0) {
+        Write-Host "Expected handoff summary to report zero large target jumps."
         exit 2
     }
     if (-not $Summary.recommended_actions -or $Summary.recommended_actions.Count -lt 1) {
@@ -2101,9 +2106,9 @@ Invoke-Step "Analyze target jump gate" {
     @(
         "time,event_type,camera,global_id,local_id,similarity,target_similarity,target_choice,target_distance,bbox,message",
         '1,target_registered,1,1,1,1.0,1.0,register,0,"0,0,10,10",registered',
-        '2,target_matched,1,1,1,0.9,0.9,switch,450,"450,0,10,10",jumped'
+        '2,target_refreshed,1,1,1,0.9,0.9,switch,450,"450,0,10,10",jumped'
     ) | Set-Content -LiteralPath $JumpLog -Encoding UTF8
-    & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\analyze_run.ps1 -Log $JumpLog -MaxTargetDistance 100
+    & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\analyze_run.ps1 -Log $JumpLog -MaxTargetDistance 100 -MaxTargetJumps 0
     $AnalyzeCode = $LASTEXITCODE
     if ($AnalyzeCode -eq 0) {
         Write-Host "Expected max-target-distance gate to reject jump log."
@@ -2171,6 +2176,7 @@ Invoke-Step "Launcher auto analysis" {
         -AnalyzeMaxRegisteredLefts 2 `
         -AnalyzeMaxTargetSwitches 0 `
         -AnalyzeMaxTargetDistance 20 `
+        -AnalyzeMaxTargetJumps 0 `
         -AnalyzeMaxBlockedTargetCandidates 0 `
         -AnalyzeMinCrossCameraIds 1 `
         -AnalyzeMinTargetSamples 2 `
@@ -2244,7 +2250,7 @@ Invoke-Step "Launcher failed analysis still collects target samples" {
         -LogDir $FailedGateLogDir `
         -AnalyzeAfterRun `
         -AnalyzeTargetLockGate `
-        -AnalyzeMinTargetMatches 99 `
+        -AnalyzeMinTargetMatches 999 `
         -SkipInstall 2>&1
     $FailedGateExitCode = $LASTEXITCODE
     if ($FailedGateExitCode -eq 0) {

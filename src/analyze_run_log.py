@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Optional
 
 
+TARGET_MATCH_EVENT_TYPES = {"target_matched", "target_refreshed"}
+TARGET_JUMP_DISTANCE = 120.0
+
+
 @dataclass
 class TargetSampleSummary:
     path: Optional[Path]
@@ -53,6 +57,7 @@ class HandoffResult:
     target_distance_count: int
     avg_target_distance: Optional[float]
     max_target_distance: Optional[float]
+    target_large_jump_count: int
     target_samples: TargetSampleSummary
 
     @property
@@ -106,6 +111,11 @@ def parse_args() -> argparse.Namespace:
         help="Fail if registered-target same-camera movement exceeds this pixel distance.",
     )
     parser.add_argument(
+        "--max-target-jumps",
+        type=int,
+        help=f"Fail if registered-target movement exceeds {TARGET_JUMP_DISTANCE:.0f}px more than this many times.",
+    )
+    parser.add_argument(
         "--max-blocked-target-candidates",
         type=int,
         help="Fail if protected similar target candidates exceed this number.",
@@ -149,6 +159,8 @@ def apply_target_lock_gate_defaults(args: argparse.Namespace) -> None:
         args.max_blocked_target_candidates = 0
     if args.max_target_distance is None:
         args.max_target_distance = 120.0
+    if args.max_target_jumps is None:
+        args.max_target_jumps = 0
     if args.min_target_samples is None:
         args.min_target_samples = 2
     if args.min_match_samples is None:
@@ -330,7 +342,7 @@ def analyze_rows(path: Path, rows: list[dict[str, str]], target_samples: TargetS
         if global_id:
             unique_global_ids.add(global_id)
 
-        if global_id and camera and event_type in {"target_registered", "target_matched", "matched", "track_created"}:
+        if global_id and camera and event_type in {"target_registered", "matched", "track_created", *TARGET_MATCH_EVENT_TYPES}:
             seen_cameras_by_id.setdefault(global_id, set()).add(camera)
 
         if event_type == "target_registered" and registered_id is None:
@@ -355,7 +367,7 @@ def analyze_rows(path: Path, rows: list[dict[str, str]], target_samples: TargetS
         if event_type == "track_created":
             track_created_count += 1
 
-        if event_type == "target_matched":
+        if event_type in TARGET_MATCH_EVENT_TYPES:
             target_match_count += 1
             target_choice = row.get("target_choice", "")
             if target_choice:
@@ -366,7 +378,7 @@ def analyze_rows(path: Path, rows: list[dict[str, str]], target_samples: TargetS
         elif event_type == "new" and row.get("target_choice", "") == "blocked":
             blocked_target_candidate_count += 1
 
-        if event_type in {"target_registered", "target_matched"}:
+        if event_type in {"target_registered", *TARGET_MATCH_EVENT_TYPES}:
             target_similarity = parse_optional_float(row.get("target_similarity", ""))
             if target_similarity is not None:
                 target_similarities.append(target_similarity)
@@ -380,7 +392,7 @@ def analyze_rows(path: Path, rows: list[dict[str, str]], target_samples: TargetS
 
         if (
             left_index is not None
-            and event_type == "target_matched"
+            and event_type in TARGET_MATCH_EVENT_TYPES
             and camera
             and camera != registered_camera
             and handoff_index is None
@@ -420,6 +432,7 @@ def analyze_rows(path: Path, rows: list[dict[str, str]], target_samples: TargetS
         target_distance_count=len(target_distances),
         avg_target_distance=sum(target_distances) / len(target_distances) if target_distances else None,
         max_target_distance=max(target_distances) if target_distances else None,
+        target_large_jump_count=sum(1 for distance in target_distances if distance > TARGET_JUMP_DISTANCE),
         target_samples=target_samples,
     )
 
@@ -459,7 +472,8 @@ def print_result(result: HandoffResult) -> None:
             "注册目标距上次位置："
             f"次数={result.target_distance_count}, "
             f"平均={result.avg_target_distance:.1f}px, "
-            f"最大={result.max_target_distance:.1f}px"
+            f"最大={result.max_target_distance:.1f}px, "
+            f"大跳={result.target_large_jump_count}"
         )
     else:
         print("注册目标距上次位置：无")
@@ -501,7 +515,9 @@ def target_lock_status(result: HandoffResult, failures: list[str]) -> str:
         return "registered_not_matched"
     if result.target_choice_counts.get("switch", 0) > 0:
         return "target_jump_risk"
-    if result.max_target_distance is not None and result.max_target_distance > 120:
+    if result.target_large_jump_count > 0:
+        return "target_jump_risk"
+    if result.max_target_distance is not None and result.max_target_distance > TARGET_JUMP_DISTANCE:
         return "target_jump_risk"
     if result.target_samples.missing_image_count > 0:
         return "sample_issue"
@@ -594,7 +610,9 @@ def recommended_actions(result: HandoffResult, failures: list[str]) -> list[str]
         actions.append("重新注册更干净的目标框，必要时降低匹配阈值或补充目标样本。")
     if result.target_choice_counts.get("switch", 0) > 0:
         actions.append("出现明显跳框，优先检查注册框背景占比，并补拍相似目标/遮挡场景再训练。")
-    if result.max_target_distance is not None and result.max_target_distance > 120:
+    if result.target_large_jump_count > 0:
+        actions.append("锁定目标出现大幅跳动，优先复查是否跳到相邻管子或被手/遮挡物干扰。")
+    if result.max_target_distance is not None and result.max_target_distance > TARGET_JUMP_DISTANCE:
         actions.append("同摄像头内目标位移过大，优先复查是否跳到旁边目标。")
     if result.blocked_target_candidate_count > 0:
         actions.append("有相似候选被拦截；若确实是跨摄像头接力，先让原摄像头中的 G001 离开画面。")
@@ -645,6 +663,10 @@ def quality_failures(result: HandoffResult, args: argparse.Namespace) -> list[st
             failures.append(
                 f"注册目标最大移动距离 {result.max_target_distance:.1f}px 超过阈值 {args.max_target_distance:.1f}px。"
             )
+    if args.max_target_jumps is not None and result.target_large_jump_count > args.max_target_jumps:
+        failures.append(
+            f"注册目标大跳次数 {result.target_large_jump_count} 超过阈值 {args.max_target_jumps}。"
+        )
     if (
         args.max_blocked_target_candidates is not None
         and result.blocked_target_candidate_count > args.max_blocked_target_candidates
@@ -707,6 +729,7 @@ def write_summary_json(path: Path, result: HandoffResult, failures: list[str]) -
         "target_distance_count": result.target_distance_count,
         "avg_target_distance": result.avg_target_distance,
         "max_target_distance": result.max_target_distance,
+        "target_large_jump_count": result.target_large_jump_count,
         "target_samples_path": None if result.target_samples.path is None else str(result.target_samples.path),
         "target_samples_exists": result.target_samples.exists,
         "target_sample_count": result.target_samples.sample_count,
@@ -749,6 +772,7 @@ def write_summary_markdown(path: Path, result: HandoffResult, failures: list[str
         f"- 目标匹配次数：{result.target_match_count}",
         f"- 注册目标最低相似度：{min_similarity}",
         f"- 注册目标最大位移：{max_distance}",
+        f"- 注册目标大跳次数：{result.target_large_jump_count}",
         f"- 跨摄像头接力：{handoff_text}",
         (
             "- 目标样本："

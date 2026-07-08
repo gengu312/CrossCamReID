@@ -1017,6 +1017,25 @@ class CrossCameraTracker:
         track.last_target_choice = detection.target_choice
         track.last_target_distance = detection.target_distance
         track.history.append((int(detection.center[0]), int(detection.center[1])))
+        if (
+            self.event_logger is not None
+            and self.registered_target_id is not None
+            and track.global_id == self.registered_target_id
+            and detection.is_target_match
+        ):
+            self.event_logger.write(
+                now,
+                "target_refreshed",
+                track.camera_id,
+                track.global_id,
+                f"摄像头{track.camera_id + 1}：G{track.global_id:03d} 持续锁定",
+                local_id=track.local_id,
+                similarity=similarity,
+                target_similarity=detection.target_similarity,
+                target_choice=detection.target_choice,
+                target_distance=detection.target_distance,
+                bbox=detection.bbox,
+            )
 
     def _move_to_lost(self, track: Track, now: float) -> None:
         self.lost.append(

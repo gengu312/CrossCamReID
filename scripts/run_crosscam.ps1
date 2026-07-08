@@ -76,6 +76,7 @@ param(
     [double]$AnalyzeMinTargetSimilarity = -1,
     [int]$AnalyzeMaxTargetSwitches = -1,
     [double]$AnalyzeMaxTargetDistance = -1,
+    [int]$AnalyzeMaxTargetJumps = -1,
     [int]$AnalyzeMaxBlockedTargetCandidates = -1,
     [int]$AnalyzeMinCrossCameraIds = -1,
     [int]$AnalyzeMinTargetSamples = -1,
@@ -422,6 +423,9 @@ if ($SelectCameras) {
     if ($AnalyzeMaxTargetDistance -ge 0) {
         Add-SelectorExtraPair "-AnalyzeMaxTargetDistance" "$AnalyzeMaxTargetDistance"
     }
+    if ($AnalyzeMaxTargetJumps -ge 0) {
+        Add-SelectorExtraPair "-AnalyzeMaxTargetJumps" "$AnalyzeMaxTargetJumps"
+    }
     if ($AnalyzeMaxBlockedTargetCandidates -ge 0) {
         Add-SelectorExtraPair "-AnalyzeMaxBlockedTargetCandidates" "$AnalyzeMaxBlockedTargetCandidates"
     }
@@ -729,6 +733,9 @@ if ($AnalyzeAfterRun -and -not $Probe) {
     }
     if ($AnalyzeMaxTargetDistance -ge 0) {
         $AnalyzeArgs += @("-MaxTargetDistance", "$AnalyzeMaxTargetDistance")
+    }
+    if ($AnalyzeMaxTargetJumps -ge 0) {
+        $AnalyzeArgs += @("-MaxTargetJumps", "$AnalyzeMaxTargetJumps")
     }
     if ($AnalyzeMaxBlockedTargetCandidates -ge 0) {
         $AnalyzeArgs += @("-MaxBlockedTargetCandidates", "$AnalyzeMaxBlockedTargetCandidates")

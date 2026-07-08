@@ -11,6 +11,7 @@ param(
     [int]$MaxRegisteredLefts = -1,
     [int]$MaxTargetSwitches = -1,
     [double]$MaxTargetDistance = -1,
+    [int]$MaxTargetJumps = -1,
     [int]$MaxBlockedTargetCandidates = -1,
     [int]$MinCrossCameraIds = -1,
     [string]$TargetSamplesCsv = "",
@@ -102,6 +103,9 @@ if ($MaxTargetSwitches -ge 0) {
 }
 if ($MaxTargetDistance -ge 0) {
     $AppArgs += @("--max-target-distance", "$MaxTargetDistance")
+}
+if ($MaxTargetJumps -ge 0) {
+    $AppArgs += @("--max-target-jumps", "$MaxTargetJumps")
 }
 if ($MaxBlockedTargetCandidates -ge 0) {
     $AppArgs += @("--max-blocked-target-candidates", "$MaxBlockedTargetCandidates")
