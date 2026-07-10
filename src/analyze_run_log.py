@@ -235,6 +235,8 @@ def resolve_indexed_image_path(raw_path: str, csv_path: Path) -> Path:
     path = Path(raw_path)
     if path.is_absolute():
         return path
+    if path.exists():
+        return path
     return csv_path.parent / path
 
 

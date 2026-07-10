@@ -92,6 +92,40 @@ docs/yolo_training_guide.md
 docs/project_improvement_plan.md
 ```
 
+本轮简要工作总结：
+
+```text
+docs/work_summary_20260710.md
+```
+
+增量训练的详细处理记录和新旧模型对比见：
+
+```text
+docs/yolo_incremental_20260710.md
+```
+
+### 本地数据、训练集和模型位置
+
+所有原始照片、原始标签和回放视频统一归档在 `dataset_raw/` 这个总目录中；整理后的训练集放在 `datasets/`，训练权重和评估结果放在 `runs_yolo/`、`runs_yolo_eval/` 等输出目录，避免原始素材和生成结果相互覆盖。
+
+| 内容 | 本地位置 | 当前数量或用途 |
+| --- | --- | --- |
+| 上一次分类原图归档 | `dataset_raw/import_20260626/` | 151 张，按 5 类保留原始目录结构 |
+| 上一次原始照片和标签 | `dataset_raw/to_label_20260626/images/`、`labels/` | 151 张，全部保留并用于本轮训练 |
+| 本次 0710 原始照片和标签 | `dataset_raw/to_label_next/images/`、`labels/` | 262 张，自动预标注后保留完整原图和标签 |
+| 本次重复照片隔离区 | `dataset_raw/to_label_next/duplicates/` | 4 张，与正式图片重复，不进入训练 |
+| 本次标注质量报告 | `dataset_raw/to_label_next/hybrid_label_report.csv` | 标记 `trusted` / `review`，`review` 不进入本轮训练 |
+| 六类回放视频 | `dataset_raw/replay_videos/` | 只用于检测、跟踪和阈值测试，不直接训练 |
+| 本轮合并训练源 | `dataset_raw/training_sources_0710_hybrid_v2/` | 旧图 151 张 + 筛选新图 122 张 |
+| 原基础训练集 | `datasets/pipe_yolo/` | 151 张，train=121、val=30 |
+| 本轮候选训练集 | `datasets/pipe_yolo_candidate_hybrid_0710_v2/` | 273 张，train=220、val=53 |
+| 原基础模型 | `runs_yolo/pipe_yolov8n/weights/best.pt` | 保留为回退模型 |
+| 本轮增量模型 | `runs_yolo/pipe_yolov8n_hybrid_0710_v2/weights/best.pt` | 当前 PipeMode 首选模型 |
+| 照片评估结果 | `runs_yolo_eval/` | 新旧模型验证结果 |
+| 视频对比结果 | `runs_detector_compare/0710_video_comparison/` | 六段视频和阈值对比 |
+
+`dataset_raw/`、训练图片/标签、`runs*/` 和 `*.pt` 均在 `.gitignore` 中，只保存在本机，不会作为纯素材或大模型文件提交到 Git。README、脚本和数据处理说明可以正常提交。
+
 采集训练照片可以双击或运行：
 
 ```powershell
@@ -113,6 +147,14 @@ docs/project_improvement_plan.md
 ```
 
 自动初标适合做第一版标签，仍需要人工打开预览图检查，尤其是堆叠、遮挡和只露头的照片。
+
+本次 0710 素材可以使用混合几何预标注入口。它会按负样本、单根和约 7 根堆叠场景生成标签，并输出逐图质量报告：
+
+```powershell
+.\auto_label_pipes_hybrid.bat -Images dataset_raw\to_label_next\images -Labels dataset_raw\to_label_next\labels -Report dataset_raw\to_label_next\hybrid_label_report.csv -Overwrite
+```
+
+质量报告中标记为 `review` 的图片不应直接进入训练集。普通水平框在斜放、交叉和紧密平行场景会高度重叠，后续可增加 YOLO OBB 或实例分割路线改善这一问题。
 
 标注并整理到 `datasets/pipe_yolo/` 后，可以先检查数据集：
 
@@ -316,9 +358,9 @@ runs/20260624-093000-events.csv
 .\run_crosscam.bat -PipeMode
 ```
 
-`-PipeMode` 会优先自动加载 `runs_yolo\pipe_yolov8n\weights\best.pt`，切换到 YOLO、多目标检测，并保留每个摄像头最多 30 个候选框。窗口里可以直接点击某一根管子的检测框，把它注册为要追踪的目标；注册后其他管子仍会显示检测框。系统会先在注册摄像头内跟踪 `G001`，只有当 `G001` 从原摄像头丢失后，另一个摄像头才允许接力成同一个 `G001`，避免另一堆相似管子提前抢占目标 ID。
+`-PipeMode` 会优先自动加载 `runs_yolo\pipe_yolov8n_hybrid_0710_v2\weights\best.pt`；如果本机没有该权重，则回退到 `runs_yolo\pipe_yolov8n\weights\best.pt`。它会切换到 YOLO、多目标检测，并保留每个摄像头最多 30 个候选框。窗口里可以直接点击某一根管子的检测框，把它注册为要追踪的目标；注册后其他管子仍会显示检测框。系统会先在注册摄像头内跟踪 `G001`，只有当 `G001` 从原摄像头丢失后，另一个摄像头才允许接力成同一个 `G001`，避免另一堆相似管子提前抢占目标 ID。
 
-注册后会优先保持上一帧附近的目标，减少在相似管子之间跳框。默认 `-TargetStickDistance 120`，如果目标移动很快可以适当调大；如果框总是粘住错误目标，可以调小，或把 `-TargetSwitchMargin` 降低一点。
+注册后会优先保持上一帧附近的目标，减少在相似管子之间跳框。PipeMode 默认使用 `-TargetStickDistance 120` 和 `-TargetSwitchMargin 0.15`；如果目标移动很快可以适当调大距离，如果框总是粘住错误目标，可以调小距离或降低切换门槛。
 
 如果目标短暂被手挡住或检测框临时消失，可以通过 `-MaxMissed` 和 `-LostTtl` 调整保留旧 ID 的时间；遮挡时间更长时适当调大，误接回旧目标时调小。
 
@@ -427,14 +469,18 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --warmup-frames 45
 
 ### 5. 使用离线视频重复测试
 
-将同一测试动作保存为 1 到 3 路视频后，可以反复运行检测、目标注册、跟踪和日志分析，不需要每次重新占用摄像头。双路测试建议把素材整理为：
+将同一测试动作保存为 1 到 3 路视频后，可以反复运行检测、目标注册、跟踪和日志分析，不需要每次重新占用摄像头。本次 0710 素材实际整理为：
 
 ```text
 dataset_raw/replay_videos/01_stack_static/camera_a.mp4
-dataset_raw/replay_videos/01_stack_static/camera_b.mp4
 dataset_raw/replay_videos/02_take_one/camera_a.mp4
-dataset_raw/replay_videos/02_take_one/camera_b.mp4
+dataset_raw/replay_videos/03_hand_occlusion/camera_a.mp4
+dataset_raw/replay_videos/04_move_rotate/camera_a.mp4
+dataset_raw/replay_videos/05_handoff/camera_a.mp4
+dataset_raw/replay_videos/06_negative/camera_a.mp4
 ```
+
+前四类和负样本可以只录单路。真实跨摄像头交接测试需要在 `05_handoff/` 中再放入同步录制的 `camera_b.mp4`；当前尚未补录该文件。
 
 运行双视频锁定检查：
 
@@ -472,7 +518,7 @@ python src\crosscam_mvp.py --video-a "D:\videos\camera_a.mp4" --video-b "D:\vide
 
 ### 6. YOLO 检测入口
 
-当前 YOLO 入口已经接入，`-PipeMode` 会优先加载 `runs_yolo\pipe_yolov8n\weights\best.pt`。现有第一版模型可用于流程演示，但复杂堆叠和真实铁管场景仍需要补充数据并重新训练；通用 COCO 预训练模型通常不能直接识别本项目的铅笔/铁管目标。
+当前 YOLO 入口已经接入，`-PipeMode` 会优先加载本轮增量模型 `runs_yolo\pipe_yolov8n_hybrid_0710_v2\weights\best.pt`，缺失时回退到原模型。增量模型已经覆盖堆叠、拿取、局部可见、角度/距离变化和负样本，但真实铁管现场仍需要单独采集和训练；通用 COCO 预训练模型通常不能直接识别本项目的铅笔/铁管目标。
 
 安装 YOLO 依赖：
 
@@ -489,7 +535,7 @@ python src\crosscam_mvp.py --demo --detector yolo --yolo-model yolov8n.pt --head
 后续有自训练模型后：
 
 ```powershell
-python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo --yolo-model runs_yolo\pipe_yolov8n\weights\best.pt --max-detections 30
+python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo --yolo-model runs_yolo\pipe_yolov8n_hybrid_0710_v2\weights\best.pt --max-detections 30
 ```
 
 一键脚本也支持：
@@ -622,6 +668,7 @@ python src\crosscam_mvp.py --camera-indexes 1,3 --backend dshow --detector rfdet
 - 光照差异大时，颜色特征会变得不稳定。
 - 铅笔这种细长小物体在画面中太小时，检测效果会下降。
 - 注册目标时如果框里包含太多背景或手，后续匹配会变乱。
+- 标准水平检测框在斜放或交叉堆叠时会高度重叠，难以稳定区分每一根细长目标；可继续评估 OBB 或实例分割。
 - 当前系统只能做概率判断，不能保证完全一样的两个物体 100% 区分。
 
 ## 四阶段完善路线
@@ -635,7 +682,7 @@ python src\crosscam_mvp.py --camera-indexes 1,3 --backend dshow --detector rfdet
 已完成：
 
 - 已接入 YOLO 检测入口，支持静止目标检测。
-- `-PipeMode` 会优先加载训练好的 `runs_yolo\pipe_yolov8n\weights\best.pt`。
+- `-PipeMode` 会优先加载本轮 `runs_yolo\pipe_yolov8n_hybrid_0710_v2\weights\best.pt`，缺失时回退到原模型。
 - 支持点击检测框注册要追踪的目标。
 - YOLO 检测已复用管状物几何过滤参数，过滤过大、过短、过粗的误检框。
 

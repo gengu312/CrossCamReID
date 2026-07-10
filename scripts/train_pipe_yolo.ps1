@@ -116,6 +116,11 @@ if (-not $YoloExe) {
     exit 2
 }
 
+$ProjectForYolo = $Project
+if (-not [System.IO.Path]::IsPathRooted($ProjectForYolo)) {
+    $ProjectForYolo = Join-Path $RepoRoot $ProjectForYolo
+}
+
 $TrainArgs = @(
     "detect",
     "train",
@@ -125,7 +130,7 @@ $TrainArgs = @(
     "imgsz=$Imgsz",
     "batch=$Batch",
     "device=$Device",
-    "project=$Project",
+    "project=$ProjectForYolo",
     "name=$Name"
 )
 

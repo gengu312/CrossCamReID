@@ -192,6 +192,7 @@ function Resolve-RfDetrCheckpoint {
 $PythonExe = Find-Python
 
 $DetectorWasProvided = $PSBoundParameters.ContainsKey("Detector")
+$TargetSwitchMarginWasProvided = $PSBoundParameters.ContainsKey("TargetSwitchMargin")
 $RfDetrNumClassesWasProvided = $PSBoundParameters.ContainsKey("RfDetrNumClasses")
 $RfDetrClassesWasProvided = $PSBoundParameters.ContainsKey("RfDetrClasses")
 $SelectorBaseDetector = $Detector
@@ -202,7 +203,9 @@ $SelectorBaseTargetUpdateAlpha = $TargetUpdateAlpha
 $SelectorBaseTrackAllAfterRegister = $TrackAllAfterRegister
 
 if ($PipeMode) {
-    $DefaultPipeModel = "runs_yolo\pipe_yolov8n\weights\best.pt"
+    $HybridPipeModel = "runs_yolo\pipe_yolov8n_hybrid_0710_v2\weights\best.pt"
+    $BaselinePipeModel = "runs_yolo\pipe_yolov8n\weights\best.pt"
+    $DefaultPipeModel = if (Test-Path $HybridPipeModel) { $HybridPipeModel } else { $BaselinePipeModel }
     if ((-not $DetectorWasProvided) -or $Detector -eq "motion") {
         $Detector = "yolo"
     }
@@ -210,7 +213,7 @@ if ($PipeMode) {
         if ($YoloModel -eq "yolov8n.pt" -and (Test-Path $DefaultPipeModel)) {
             $YoloModel = $DefaultPipeModel
         } elseif ($YoloModel -eq "yolov8n.pt") {
-            Write-Host "PipeMode warning: trained pipe model was not found at runs_yolo\pipe_yolov8n\weights\best.pt. Using yolov8n.pt for smoke testing only."
+            Write-Host "PipeMode warning: no trained pipe model was found under runs_yolo. Using yolov8n.pt for smoke testing only."
         }
     } elseif ($Detector -eq "rfdetr") {
         $DefaultRfDetrWeights = Resolve-RfDetrCheckpoint $RfDetrSize
@@ -232,6 +235,9 @@ if ($PipeMode) {
     $CrossThreshold = 0.62
     $TargetThreshold = 0.50
     $TargetUpdateAlpha = 0.0
+    if (-not $TargetSwitchMarginWasProvided) {
+        $TargetSwitchMargin = 0.15
+    }
     $TrackAllAfterRegister = $true
 }
 

@@ -48,6 +48,7 @@ $ExportRoot = Join-Path $SmokeRoot "exported"
 $DatasetRoot = Join-Path $SmokeRoot "dataset"
 $RfDetrDatasetRoot = Join-Path $SmokeRoot "dataset_rfdetr"
 $AutoLabelRoot = Join-Path $SmokeRoot "auto_label"
+$HybridAutoLabelRoot = Join-Path $SmokeRoot "auto_label_hybrid"
 $RunLogDir = Join-Path $SmokeRoot "runs"
 
 Remove-Item -Recurse -Force $SmokeRoot -ErrorAction SilentlyContinue
@@ -62,6 +63,7 @@ Invoke-Step "Python compile" {
         src\prepare_yolo_dataset.py `
         src\validate_yolo_dataset.py `
         src\auto_label_pipes.py `
+        src\auto_label_pipes_hybrid.py `
         src\collect_yolo_issues.py `
         src\collect_target_samples.py `
         src\export_yolo_to_coco.py `
@@ -1382,6 +1384,55 @@ cv2.imwrite(str(root / "single_green_pipe.jpg"), image)
     }
     Write-Host "Missing auto-label input rejected."
     $global:LASTEXITCODE = 0
+}
+
+Invoke-Step "Hybrid auto-label sample" {
+    $HybridImages = Join-Path $HybridAutoLabelRoot "images"
+    $HybridLabels = Join-Path $HybridAutoLabelRoot "labels"
+    $HybridPreviews = Join-Path $HybridAutoLabelRoot "previews"
+    $HybridReport = Join-Path $HybridAutoLabelRoot "report.csv"
+    New-Item -ItemType Directory -Force -Path $HybridImages | Out-Null
+    $env:CROSSCAM_SMOKE_HYBRID = $HybridImages
+    @'
+import cv2
+import os
+from pathlib import Path
+import numpy as np
+
+root = Path(os.environ["CROSSCAM_SMOKE_HYBRID"])
+background = np.full((180, 420, 3), (38, 42, 46), dtype=np.uint8)
+cv2.imwrite(str(root / "negative_sample.jpg"), background)
+
+hsv_color = np.uint8([[[95, 190, 170]]])
+bgr_color = tuple(int(value) for value in cv2.cvtColor(hsv_color, cv2.COLOR_HSV2BGR)[0, 0])
+single = background.copy()
+cv2.line(single, (55, 90), (365, 90), bgr_color, 22, cv2.LINE_AA)
+cv2.imwrite(str(root / "single_front_sample.jpg"), single)
+'@ | & $PythonExe -
+
+    & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\auto_label_pipes_hybrid.ps1 `
+        -Images $HybridImages `
+        -Labels $HybridLabels `
+        -Previews $HybridPreviews `
+        -Report $HybridReport `
+        -Preview `
+        -Overwrite
+
+    $NegativeLabel = Join-Path $HybridLabels "negative_sample.txt"
+    $SingleLabel = Join-Path $HybridLabels "single_front_sample.txt"
+    if (-not (Test-Path $NegativeLabel) -or (Get-Content $NegativeLabel | Where-Object { $_.Trim() -ne "" })) {
+        Write-Host "Hybrid negative sample should have an empty label."
+        exit 2
+    }
+    if (-not (Test-Path $SingleLabel) -or (Get-Content $SingleLabel | Where-Object { $_.Trim() -ne "" }).Count -ne 1) {
+        Write-Host "Hybrid single sample should have exactly one label."
+        exit 2
+    }
+    $Rows = Import-Csv $HybridReport
+    if ($Rows.Count -ne 2 -or ($Rows | Where-Object { $_.status -ne "trusted" })) {
+        Write-Host "Hybrid auto-label report did not contain two trusted rows."
+        exit 2
+    }
 }
 
 Invoke-Step "Prepare sample YOLO export" {
