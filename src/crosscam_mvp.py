@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import time
 from collections import deque
@@ -2267,7 +2268,11 @@ def build_detectors(args: argparse.Namespace, camera_count: int):
     raise ValueError(f"Unsupported detector: {args.detector}")
 
 
-def run_config_message(args: argparse.Namespace, camera_count: int) -> str:
+def run_config_message(
+    args: argparse.Namespace,
+    camera_count: int,
+    sources: Optional[list[object]] = None,
+) -> str:
     if resolve_video_paths(args):
         source_mode = "video"
     elif args.demo:
@@ -2293,6 +2298,17 @@ def run_config_message(args: argparse.Namespace, camera_count: int) -> str:
                 f"video_playback_rate={args.video_playback_rate:.3f}",
             ]
         )
+        for camera_id, source in enumerate(sources or []):
+            if not isinstance(source, VideoFileSource):
+                continue
+            label = chr(ord("a") + camera_id)
+            parts.extend(
+                [
+                    f"video_{label}_path={source.path}",
+                    f"video_{label}_fps={source.fps:.3f}",
+                    f"video_{label}_frames={source.frame_count}",
+                ]
+            )
     if args.detector == "yolo":
         parts.extend(
             [
@@ -2316,6 +2332,81 @@ def run_config_message(args: argparse.Namespace, camera_count: int) -> str:
             ]
         )
     return "; ".join(parts)
+
+
+def write_video_run_manifest(
+    log_dir: Path,
+    args: argparse.Namespace,
+    sources: list[object],
+    started_at: float,
+    status: str,
+    processed_frames: int,
+    cross_camera_match_observed: bool,
+    event_log: Optional[Path],
+) -> Optional[Path]:
+    video_sources = [source for source in sources if isinstance(source, VideoFileSource)]
+    if args.no_log or len(video_sources) != len(sources):
+        return None
+
+    detector: dict[str, object] = {
+        "type": args.detector,
+        "max_detections": args.max_detections,
+    }
+    if args.detector == "yolo":
+        detector["yolo"] = {
+            "model": str(Path(args.yolo_model).resolve()) if Path(args.yolo_model).exists() else args.yolo_model,
+            "confidence": args.yolo_conf,
+            "iou": args.yolo_iou,
+            "image_size": args.yolo_imgsz,
+            "device": args.yolo_device or "auto",
+        }
+    elif args.detector == "rfdetr":
+        detector["rfdetr"] = {
+            "size": args.rfdetr_size,
+            "weights": args.rfdetr_weights or "default",
+            "confidence": args.rfdetr_conf,
+            "num_classes": args.rfdetr_num_classes,
+        }
+
+    payload = {
+        "schema_version": 1,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started_at)),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime()),
+        "status": status,
+        "processed_frames": processed_frames,
+        "cross_camera_match_observed": cross_camera_match_observed,
+        "event_log": None if event_log is None else str(event_log.resolve()),
+        "source": {
+            "mode": "video",
+            "loop": args.loop_videos,
+            "playback_rate": args.video_playback_rate,
+            "videos": [
+                {
+                    "camera": chr(ord("A") + camera_id),
+                    "path": str(source.path),
+                    "fps": source.fps,
+                    "frame_count": source.frame_count,
+                }
+                for camera_id, source in enumerate(video_sources)
+            ],
+        },
+        "detector": detector,
+        "target": {
+            "threshold": args.target_threshold,
+            "update_alpha": args.target_update_alpha,
+            "cross_threshold": args.cross_threshold,
+            "stick_distance": args.target_stick_distance,
+            "switch_margin": args.target_switch_margin,
+        },
+    }
+    manifest_path = log_dir / "run_manifest.json"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"无法写入离线视频运行清单：{exc}")
+        return None
+    return manifest_path
 
 
 def probe_cameras(max_index: int, backend: str) -> None:
@@ -2349,7 +2440,8 @@ def run(args: argparse.Namespace) -> int:
     camera_count = len(sources)
     detectors = build_detectors(args, camera_count)
     print(f"检测模式：{args.detector}")
-    event_logger.write_run_config(time.time(), run_config_message(args, camera_count))
+    run_started_at = time.time()
+    event_logger.write_run_config(run_started_at, run_config_message(args, camera_count, sources))
     tracker = CrossCameraTracker(
         camera_count=camera_count,
         max_missed=args.max_missed,
@@ -2374,7 +2466,17 @@ def run(args: argparse.Namespace) -> int:
 
     processed = 0
     matched_seen = False
-    run_started_at = time.time()
+    run_finished = False
+    manifest_path = write_video_run_manifest(
+        log_dir,
+        args,
+        sources,
+        run_started_at,
+        "running",
+        processed,
+        matched_seen,
+        event_logger.csv_path,
+    )
     frame_interval = video_frame_interval(sources)
     wait_delay_ms = (
         max(1, int(round(frame_interval * 1000.0 / args.video_playback_rate)))
@@ -2587,7 +2689,19 @@ def run(args: argparse.Namespace) -> int:
             processed += 1
             if args.frames > 0 and processed >= args.frames:
                 break
+        run_finished = True
     finally:
+        if manifest_path is not None:
+            write_video_run_manifest(
+                log_dir,
+                args,
+                sources,
+                run_started_at,
+                "completed" if run_finished else "interrupted",
+                processed,
+                matched_seen,
+                event_logger.csv_path,
+            )
         for source in sources:
             source.release()
         event_logger.close()
@@ -2598,6 +2712,8 @@ def run(args: argparse.Namespace) -> int:
     print(f"是否观察到跨摄像头匹配：{'是' if matched_seen else '否'}")
     if event_logger.csv_path is not None:
         print(f"事件日志：{event_logger.csv_path}")
+    if manifest_path is not None:
+        print(f"运行清单：{manifest_path}")
     if tracker.events:
         print("最近事件：")
         for event in reversed(list(tracker.events)):

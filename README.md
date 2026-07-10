@@ -444,6 +444,14 @@ dataset_raw/replay_videos/02_take_one/camera_b.mp4
 
 程序默认使用 `PipeMode` 和第一版自训练 YOLO 模型。视频播放时点击其中一根目标的检测框，播放结束后会自动分析锁定质量。任一路视频先结束时，两路回放会一起停止，建议使用相同帧率、相近长度并同时开始录制的视频。
 
+未指定 `-LogDir` 时，每次回放会自动使用独立目录：
+
+```text
+runs/video_replay/<视频所在场景目录>/<运行时间>/
+```
+
+目录中会保存事件 CSV、`latest-summary.json`、`latest-summary.md`、目标样本和 `run_manifest.json`。运行清单记录视频绝对路径、帧率、总帧数、检测模型参数、实际处理帧数和跨摄像头匹配结果，后续可以确认某份结果对应哪组素材和参数。需要指定输出位置时可显式传入 `-LogDir`，程序不会改写该路径。
+
 慢速播放便于点击和观察：
 
 ```powershell

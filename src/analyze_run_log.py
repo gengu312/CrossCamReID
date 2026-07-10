@@ -210,6 +210,7 @@ def format_run_config(config: dict[str, str]) -> str:
     if not config:
         return "未记录"
     preferred_keys = [
+        "source_mode",
         "detector",
         "camera_count",
         "backend",

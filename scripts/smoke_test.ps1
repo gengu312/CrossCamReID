@@ -77,6 +77,55 @@ Invoke-Step "Offline video replay" {
     & $PythonExe tests\test_video_replay.py
 }
 
+Invoke-Step "Offline video replay launcher" {
+    $ReplayScenarioRoot = Join-Path $SmokeRoot "replay scenario"
+    $VideoA = Join-Path $ReplayScenarioRoot "camera a.avi"
+    $VideoB = Join-Path $ReplayScenarioRoot "camera b.avi"
+    $AutoOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_crosscam.ps1 `
+        -VideoA $VideoA `
+        -VideoB $VideoB `
+        -PipeMode `
+        -PrintOnly `
+        -SkipInstall 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $AutoOutput | ForEach-Object { Write-Host $_ }
+        exit $LASTEXITCODE
+    }
+    $AutoText = $AutoOutput -join "`n"
+    $AutoLogPattern = [regex]::Escape("output: log_dir=runs\video_replay\replay scenario\") + '\d{8}-\d{6}-\d{3}'
+    foreach ($RequiredText in @("mode: video + PipeMode", "--video-a", "--video-b", "--log-dir")) {
+        if ($AutoText -notmatch [regex]::Escape($RequiredText)) {
+            $AutoOutput | ForEach-Object { Write-Host $_ }
+            Write-Host "Expected video replay launcher output to include: $RequiredText"
+            exit 2
+        }
+    }
+    if ($AutoText -notmatch $AutoLogPattern) {
+        $AutoOutput | ForEach-Object { Write-Host $_ }
+        Write-Host "Expected video replay launcher to create a scenario-specific log path."
+        exit 2
+    }
+
+    $ExplicitLogDir = Join-Path $SmokeRoot "explicit replay log"
+    $ExplicitOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_crosscam.ps1 `
+        -VideoA $VideoA `
+        -VideoB $VideoB `
+        -LogDir $ExplicitLogDir `
+        -PrintOnly `
+        -SkipInstall 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $ExplicitOutput | ForEach-Object { Write-Host $_ }
+        exit $LASTEXITCODE
+    }
+    $ExplicitText = $ExplicitOutput -join "`n"
+    if ($ExplicitText -notmatch [regex]::Escape("output: log_dir=$ExplicitLogDir")) {
+        $ExplicitOutput | ForEach-Object { Write-Host $_ }
+        Write-Host "Expected explicit LogDir to be preserved."
+        exit 2
+    }
+    Write-Host "Offline video replay launcher output isolation ok."
+}
+
 Invoke-Step "PowerShell syntax" {
     $ParseFailures = @()
     Get-ChildItem -LiteralPath (Join-Path $RepoRoot "scripts") -Filter *.ps1 | Sort-Object Name | ForEach-Object {

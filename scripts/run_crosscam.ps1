@@ -106,6 +106,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
 $HasVideoInput = $VideoA -ne "" -or $VideoB -ne "" -or $VideoC -ne ""
+$LogDirWasProvided = $PSBoundParameters.ContainsKey("LogDir")
 if ($HasVideoInput -and $VideoA -eq "") {
     throw "VideoA is required when offline video input is enabled."
 }
@@ -117,6 +118,23 @@ if ($HasVideoInput -and ($SelectCameras -or $Demo -or $Probe -or $FallbackDemo))
 }
 if ($HasVideoInput -and ($CameraIndexes -ne "" -or $CamA -ne "auto" -or $CamB -ne "auto")) {
     throw "Offline video input cannot be combined with CameraIndexes, CamA, or CamB."
+}
+
+function Get-ReplayScenarioName {
+    param([string]$VideoPath)
+
+    $FullPath = [System.IO.Path]::GetFullPath($VideoPath)
+    $ParentPath = Split-Path -Parent $FullPath
+    $ScenarioName = Split-Path -Leaf $ParentPath
+    if ([string]::IsNullOrWhiteSpace($ScenarioName)) {
+        $ScenarioName = [System.IO.Path]::GetFileNameWithoutExtension($FullPath)
+    }
+    $InvalidPattern = "[{0}]" -f [regex]::Escape((-join [System.IO.Path]::GetInvalidFileNameChars()))
+    $ScenarioName = ($ScenarioName -replace $InvalidPattern, "_").Trim()
+    if ([string]::IsNullOrWhiteSpace($ScenarioName)) {
+        return "video_replay"
+    }
+    return $ScenarioName
 }
 
 function Find-Python {
@@ -215,6 +233,12 @@ if ($PipeMode) {
     $TargetThreshold = 0.50
     $TargetUpdateAlpha = 0.0
     $TrackAllAfterRegister = $true
+}
+
+if ($HasVideoInput -and -not $LogDirWasProvided) {
+    $ScenarioName = Get-ReplayScenarioName -VideoPath $VideoA
+    $RunTimestamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
+    $LogDir = Join-Path (Join-Path "runs\video_replay" $ScenarioName) $RunTimestamp
 }
 
 $EffectiveAnalyzeSummaryJson = $AnalyzeSummaryJson

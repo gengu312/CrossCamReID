@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 import subprocess
 import sys
@@ -109,6 +110,23 @@ class VideoReplayTest(unittest.TestCase):
             run_config = next(row for row in rows if row["event_type"] == "run_config")
             self.assertIn("source_mode=video", run_config["message"])
             self.assertIn("camera_count=2", run_config["message"])
+            self.assertIn(f"video_a_path={video_a.resolve()}", run_config["message"])
+            self.assertIn("video_a_fps=20.000", run_config["message"])
+            self.assertIn("video_b_frames=8", run_config["message"])
+
+            manifest_path = log_dir / "run_manifest.json"
+            self.assertTrue(manifest_path.is_file())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema_version"], 1)
+            self.assertEqual(manifest["status"], "completed")
+            self.assertEqual(manifest["processed_frames"], 8)
+            self.assertFalse(manifest["cross_camera_match_observed"])
+            self.assertEqual(manifest["source"]["mode"], "video")
+            self.assertEqual(len(manifest["source"]["videos"]), 2)
+            self.assertEqual(manifest["source"]["videos"][0]["path"], str(video_a.resolve()))
+            self.assertEqual(manifest["source"]["videos"][1]["frame_count"], 8)
+            self.assertEqual(manifest["detector"]["type"], "motion")
+            self.assertEqual(Path(manifest["event_log"]), event_logs[0].resolve())
 
     def test_headless_video_loop_honors_frame_limit(self) -> None:
         with tempfile.TemporaryDirectory(prefix="crosscam-video-loop-") as temp_dir:
