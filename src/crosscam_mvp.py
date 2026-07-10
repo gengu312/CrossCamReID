@@ -278,6 +278,39 @@ class EventLogger:
             self._file = None
 
 
+class VideoFileSource:
+    def __init__(self, path: Path, loop: bool = False) -> None:
+        self.path = path.resolve()
+        self.loop = loop
+        if not self.path.is_file():
+            raise RuntimeError(f"离线视频不存在：{self.path}")
+
+        self.capture = cv2.VideoCapture(str(self.path))
+        if not self.capture.isOpened():
+            self.capture.release()
+            raise RuntimeError(f"无法打开离线视频：{self.path}")
+
+        fps = float(self.capture.get(cv2.CAP_PROP_FPS))
+        self.fps = fps if math.isfinite(fps) and fps > 0.0 else 30.0
+        self.frame_count = max(0, int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT)))
+
+    def read(self) -> tuple[bool, Optional[np.ndarray]]:
+        ok, frame = self.capture.read()
+        if ok and frame is not None:
+            return True, frame
+        if not self.loop:
+            return False, None
+
+        self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ok, frame = self.capture.read()
+        if ok and frame is not None:
+            return True, frame
+        return False, None
+
+    def release(self) -> None:
+        self.capture.release()
+
+
 class SyntheticCamera:
     """Small deterministic synthetic scene used for repeatable verification."""
 
@@ -2059,7 +2092,68 @@ def synthetic_sources(count: int) -> list[SyntheticCamera]:
     return [SyntheticCamera(camera_id) for camera_id in range(count)]
 
 
+def resolve_video_paths(args: argparse.Namespace) -> list[Path]:
+    values = [
+        str(getattr(args, "video_a", "") or "").strip(),
+        str(getattr(args, "video_b", "") or "").strip(),
+        str(getattr(args, "video_c", "") or "").strip(),
+    ]
+    if not any(values):
+        return []
+    if not values[0]:
+        raise RuntimeError("使用离线视频时必须先指定 --video-a。")
+    if values[2] and not values[1]:
+        raise RuntimeError("指定 --video-c 时也必须指定 --video-b。")
+
+    paths: list[Path] = []
+    for value in values:
+        if not value:
+            break
+        paths.append(Path(value).expanduser())
+    return paths
+
+
+def open_video_sources(args: argparse.Namespace, paths: list[Path]) -> list[VideoFileSource]:
+    sources: list[VideoFileSource] = []
+    try:
+        for path in paths:
+            sources.append(VideoFileSource(path, loop=args.loop_videos))
+    except Exception:
+        for source in sources:
+            source.release()
+        raise
+
+    fps_values = [source.fps for source in sources]
+    if max(fps_values) - min(fps_values) > 0.1:
+        print(
+            "离线视频帧率不一致，将按帧序号同步读取："
+            + "，".join(f"{source.path.name}={source.fps:.2f}fps" for source in sources)
+        )
+    labels = [
+        f"{chr(ord('A') + index)}={source.path} ({source.fps:.2f}fps, {source.frame_count}帧)"
+        for index, source in enumerate(sources)
+    ]
+    print("已打开离线视频：" + "，".join(labels))
+    return sources
+
+
+def video_frame_interval(sources: list[object]) -> Optional[float]:
+    if not sources or not all(isinstance(source, VideoFileSource) for source in sources):
+        return None
+    return 1.0 / max(1.0, sources[0].fps)
+
+
 def open_sources(args: argparse.Namespace):
+    video_paths = resolve_video_paths(args)
+    if video_paths:
+        if args.demo:
+            raise RuntimeError("--demo 不能和离线视频参数同时使用。")
+        if args.fallback_demo:
+            raise RuntimeError("离线视频模式不能使用 --fallback-demo。")
+        if args.camera_indexes is not None or args.cam_a is not None or args.cam_b is not None:
+            raise RuntimeError("离线视频参数不能和物理摄像头索引同时使用。")
+        return open_video_sources(args, video_paths)
+
     if args.demo:
         return synthetic_sources(synthetic_camera_count(args))
 
@@ -2174,7 +2268,14 @@ def build_detectors(args: argparse.Namespace, camera_count: int):
 
 
 def run_config_message(args: argparse.Namespace, camera_count: int) -> str:
+    if resolve_video_paths(args):
+        source_mode = "video"
+    elif args.demo:
+        source_mode = "demo"
+    else:
+        source_mode = "camera"
     parts = [
+        f"source_mode={source_mode}",
         f"detector={args.detector}",
         f"camera_count={camera_count}",
         f"backend={args.backend}",
@@ -2185,6 +2286,13 @@ def run_config_message(args: argparse.Namespace, camera_count: int) -> str:
         f"target_update_alpha={args.target_update_alpha:.3f}",
         f"cross_threshold={args.cross_threshold:.3f}",
     ]
+    if source_mode == "video":
+        parts.extend(
+            [
+                f"video_loop={int(args.loop_videos)}",
+                f"video_playback_rate={args.video_playback_rate:.3f}",
+            ]
+        )
     if args.detector == "yolo":
         parts.extend(
             [
@@ -2226,6 +2334,11 @@ def probe_cameras(max_index: int, backend: str) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.video_playback_rate <= 0:
+        raise RuntimeError("--video-playback-rate 必须大于 0。")
+    video_paths = resolve_video_paths(args)
+    if video_paths and args.probe:
+        raise RuntimeError("--probe 不能和离线视频参数同时使用。")
     if args.probe:
         probe_cameras(args.probe_max, args.backend)
         return 0
@@ -2261,6 +2374,13 @@ def run(args: argparse.Namespace) -> int:
 
     processed = 0
     matched_seen = False
+    run_started_at = time.time()
+    frame_interval = video_frame_interval(sources)
+    wait_delay_ms = (
+        max(1, int(round(frame_interval * 1000.0 / args.video_playback_rate)))
+        if frame_interval is not None
+        else 1
+    )
     try:
         while True:
             frames: list[np.ndarray] = []
@@ -2275,10 +2395,13 @@ def run(args: argparse.Namespace) -> int:
                     frame = cv2.flip(frame, 1)
                 frames.append(frame)
             if stopped:
-                print("有一个视频源停止输出画面。")
+                if frame_interval is not None:
+                    print("离线视频播放结束：至少一路视频已到结尾。")
+                else:
+                    print("有一个视频源停止输出画面。")
                 break
 
-            now = time.time()
+            now = run_started_at + processed * frame_interval if frame_interval is not None else time.time()
 
             raw_detections_by_camera = [detector.detect(frames[camera_id]) for camera_id, detector in enumerate(detectors)]
             if args.auto_register_first and not target_profile.active and raw_detections_by_camera[0]:
@@ -2357,7 +2480,7 @@ def run(args: argparse.Namespace) -> int:
                 ui_state.event_scroll_offset = min(ui_state.event_scroll_offset, max_event_scroll)
                 ui_state.buttons = offset_buttons(buttons, content_height)
                 cv2.imshow(WINDOW_NAME, canvas)
-                key = cv2.waitKey(1) & 0xFF
+                key = cv2.waitKey(wait_delay_ms) & 0xFF
                 action = ui_state.pending_action
                 canvas_click = ui_state.pending_canvas_click
                 ui_state.pending_action = None
@@ -2395,7 +2518,7 @@ def run(args: argparse.Namespace) -> int:
                         frames_by_camera[camera_id][3],
                         camera_id,
                         log_dir,
-                        time.time(),
+                        now,
                     )
                 if action == "register_right" and len(view_order) >= 2:
                     camera_id = displayed_camera_index(view_order, "right")
@@ -2406,7 +2529,7 @@ def run(args: argparse.Namespace) -> int:
                         frames_by_camera[camera_id][3],
                         camera_id,
                         log_dir,
-                        time.time(),
+                        now,
                     )
                 if action == "register_third" and len(view_order) >= 3:
                     camera_id = view_order[2]
@@ -2417,26 +2540,26 @@ def run(args: argparse.Namespace) -> int:
                         frames_by_camera[camera_id][3],
                         camera_id,
                         log_dir,
-                        time.time(),
+                        now,
                     )
                 if action == "manual_left":
                     camera_id = displayed_camera_index(view_order, "left")
                     selected = select_target_from_frame(frames_by_camera[camera_id][0], camera_id)
                     if selected is not None:
                         crop, bbox = selected
-                        register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, time.time())
+                        register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, now)
                 if action == "manual_right" and len(view_order) >= 2:
                     camera_id = displayed_camera_index(view_order, "right")
                     selected = select_target_from_frame(frames_by_camera[camera_id][0], camera_id)
                     if selected is not None:
                         crop, bbox = selected
-                        register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, time.time())
+                        register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, now)
                 if action == "manual_third" and len(view_order) >= 3:
                     camera_id = view_order[2]
                     selected = select_target_from_frame(frames_by_camera[camera_id][0], camera_id)
                     if selected is not None:
                         crop, bbox = selected
-                        register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, time.time())
+                        register_target(target_profile, tracker, event_logger, crop, bbox, camera_id, log_dir, now)
                 if canvas_click is not None and canvas_click[1] < FRAME_H:
                     click_x, click_y = canvas_click
                     display_slot = click_x // FRAME_W
@@ -2454,7 +2577,7 @@ def run(args: argparse.Namespace) -> int:
                                 event_logger,
                                 clicked_detection,
                                 log_dir,
-                                time.time(),
+                                now,
                             )
                         else:
                             tracker.events.appendleft(
@@ -2497,6 +2620,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--cam-a", type=parse_camera_index, default=None, help="Camera A index, or auto.")
     parser.add_argument("--cam-b", type=parse_camera_index, default=None, help="Camera B index, or auto.")
+    parser.add_argument("--video-a", default="", help="Offline video path for source A.")
+    parser.add_argument("--video-b", default="", help="Optional offline video path for source B.")
+    parser.add_argument("--video-c", default="", help="Optional offline video path for source C.")
+    parser.add_argument("--loop-videos", action="store_true", help="Loop offline videos after reaching the end.")
+    parser.add_argument(
+        "--video-playback-rate",
+        type=float,
+        default=1.0,
+        help="GUI playback speed for offline videos, such as 0.5 or 2.0.",
+    )
     parser.add_argument(
         "--backend",
         choices=("auto", *BACKENDS.keys()),

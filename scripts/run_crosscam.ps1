@@ -2,6 +2,12 @@ param(
     [string]$CameraIndexes = "",
     [string]$CamA = "auto",
     [string]$CamB = "auto",
+    [string]$VideoA = "",
+    [string]$VideoB = "",
+    [string]$VideoC = "",
+    [switch]$LoopVideos,
+    [ValidateRange(0.1, 10.0)]
+    [double]$VideoPlaybackRate = 1.0,
     [string]$CameraScanOrder = "1,3,2,0,4,5",
     [string]$PreferredCameraIndexes = "1,3",
     [int]$ProbeMax = 10,
@@ -98,6 +104,20 @@ $env:PYTHONIOENCODING = "utf-8"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
+
+$HasVideoInput = $VideoA -ne "" -or $VideoB -ne "" -or $VideoC -ne ""
+if ($HasVideoInput -and $VideoA -eq "") {
+    throw "VideoA is required when offline video input is enabled."
+}
+if ($VideoC -ne "" -and $VideoB -eq "") {
+    throw "VideoB is required when VideoC is specified."
+}
+if ($HasVideoInput -and ($SelectCameras -or $Demo -or $Probe -or $FallbackDemo)) {
+    throw "Offline video input cannot be combined with SelectCameras, Demo, Probe, or FallbackDemo."
+}
+if ($HasVideoInput -and ($CameraIndexes -ne "" -or $CamA -ne "auto" -or $CamB -ne "auto")) {
+    throw "Offline video input cannot be combined with CameraIndexes, CamA, or CamB."
+}
 
 function Find-Python {
     $python = Get-Command python -ErrorAction SilentlyContinue
@@ -520,7 +540,16 @@ if ($Probe) {
         $AppArgs += "--rfdetr-optimize"
     }
 } else {
-    if ($CameraIndexes -ne "") {
+    if ($HasVideoInput) {
+        $AppArgs += @("--video-a", $VideoA)
+        if ($VideoB -ne "") {
+            $AppArgs += @("--video-b", $VideoB)
+        }
+        if ($VideoC -ne "") {
+            $AppArgs += @("--video-c", $VideoC)
+        }
+        $AppArgs += @("--video-playback-rate", "$VideoPlaybackRate")
+    } elseif ($CameraIndexes -ne "") {
         $AppArgs += @("--camera-indexes", $CameraIndexes)
     } else {
         $AppArgs += @("--cam-a", "$CamA", "--cam-b", "$CamB")
@@ -584,7 +613,6 @@ if ($Probe) {
     if ($SingleObject) {
         $AppArgs += "--single-object"
     }
-
 }
 
 if (-not $Probe) {
@@ -602,6 +630,9 @@ if (-not $Probe) {
     }
     if ($FallbackDemo) {
         $AppArgs += "--fallback-demo"
+    }
+    if ($LoopVideos) {
+        $AppArgs += "--loop-videos"
     }
 }
 
@@ -637,6 +668,15 @@ function Format-ExistingPathStatus {
     return "missing"
 }
 
+function Format-CommandPart {
+    param([string]$Value)
+
+    if ($Value -notmatch '[\s"]') {
+        return $Value
+    }
+    return '"' + ($Value -replace '"', '`"') + '"'
+}
+
 function Show-LaunchSummary {
     Write-Host ""
     Write-Host "Launch summary:"
@@ -646,7 +686,9 @@ function Show-LaunchSummary {
         return
     }
 
-    if ($Demo) {
+    if ($HasVideoInput) {
+        $ModeLabel = "video"
+    } elseif ($Demo) {
         $ModeLabel = "demo"
     } else {
         $ModeLabel = "camera"
@@ -656,7 +698,16 @@ function Show-LaunchSummary {
     }
     Write-Host "  mode: $ModeLabel"
 
-    if ($CameraIndexes -ne "") {
+    if ($HasVideoInput) {
+        $VideoParts = @("A=$VideoA")
+        if ($VideoB -ne "") {
+            $VideoParts += "B=$VideoB"
+        }
+        if ($VideoC -ne "") {
+            $VideoParts += "C=$VideoC"
+        }
+        Write-Host "  videos: $($VideoParts -join ', '), loop=$LoopVideos, playback_rate=$VideoPlaybackRate"
+    } elseif ($CameraIndexes -ne "") {
         Write-Host "  cameras: indexes=$CameraIndexes, backend=$Backend"
     } elseif (-not $Demo) {
         Write-Host "  cameras: A=$CamA, B=$CamB, scan_order=$CameraScanOrder, backend=$Backend"
@@ -686,7 +737,9 @@ if ($PrintOnly) {
     Write-Utf8Host "5q2j5Zyo6L+Q6KGMIENyb3NzQ2FtUmVJRC4uLg=="
 }
 Show-LaunchSummary
-Write-Host "$PythonExe $($AppArgs -join ' ')"
+$DisplayCommand = @((Format-CommandPart $PythonExe))
+$DisplayCommand += $AppArgs | ForEach-Object { Format-CommandPart "$_" }
+Write-Host ($DisplayCommand -join " ")
 Write-Host ""
 
 if ($PrintOnly) {

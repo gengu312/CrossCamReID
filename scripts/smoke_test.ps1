@@ -73,6 +73,10 @@ Invoke-Step "Python compile" {
         src\realsense_depth_probe.py
 }
 
+Invoke-Step "Offline video replay" {
+    & $PythonExe tests\test_video_replay.py
+}
+
 Invoke-Step "PowerShell syntax" {
     $ParseFailures = @()
     Get-ChildItem -LiteralPath (Join-Path $RepoRoot "scripts") -Filter *.ps1 | Sort-Object Name | ForEach-Object {

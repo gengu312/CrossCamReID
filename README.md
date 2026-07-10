@@ -425,7 +425,44 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --roi-a 60,80,520,220 --roi-b 60,
 python src\crosscam_mvp.py --cam-a 0 --cam-b 1 --warmup-frames 45
 ```
 
-### 5. YOLO 检测入口
+### 5. 使用离线视频重复测试
+
+将同一测试动作保存为 1 到 3 路视频后，可以反复运行检测、目标注册、跟踪和日志分析，不需要每次重新占用摄像头。双路测试建议把素材整理为：
+
+```text
+dataset_raw/replay_videos/01_stack_static/camera_a.mp4
+dataset_raw/replay_videos/01_stack_static/camera_b.mp4
+dataset_raw/replay_videos/02_take_one/camera_a.mp4
+dataset_raw/replay_videos/02_take_one/camera_b.mp4
+```
+
+运行双视频锁定检查：
+
+```powershell
+.\run_video_replay.bat -VideoA "D:\videos\camera_a.mp4" -VideoB "D:\videos\camera_b.mp4"
+```
+
+程序默认使用 `PipeMode` 和第一版自训练 YOLO 模型。视频播放时点击其中一根目标的检测框，播放结束后会自动分析锁定质量。任一路视频先结束时，两路回放会一起停止，建议使用相同帧率、相近长度并同时开始录制的视频。
+
+慢速播放便于点击和观察：
+
+```powershell
+.\run_video_replay.bat -VideoA "D:\videos\camera_a.mp4" -VideoB "D:\videos\camera_b.mp4" -VideoPlaybackRate 0.5
+```
+
+循环演示并要求检查跨摄像头接力：
+
+```powershell
+.\run_video_replay.bat -VideoA "D:\videos\camera_a.mp4" -VideoB "D:\videos\camera_b.mp4" -LoopVideos -AnalyzeRequireHandoff
+```
+
+也可以直接调用 Python，并使用 `--video-c` 增加第三路视频：
+
+```powershell
+python src\crosscam_mvp.py --video-a "D:\videos\camera_a.mp4" --video-b "D:\videos\camera_b.mp4" --video-c "D:\videos\camera_c.mp4"
+```
+
+### 6. YOLO 检测入口
 
 当前 YOLO 入口已经接入，`-PipeMode` 会优先加载 `runs_yolo\pipe_yolov8n\weights\best.pt`。现有第一版模型可用于流程演示，但复杂堆叠和真实铁管场景仍需要补充数据并重新训练；通用 COCO 预训练模型通常不能直接识别本项目的铅笔/铁管目标。
 
@@ -453,7 +490,7 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo -
 .\run_crosscam.bat -PipeMode
 ```
 
-### 6. RF-DETR 可选检测入口
+### 7. RF-DETR 可选检测入口
 
 RF-DETR 现在作为可选检测后端接入，用来和 YOLO 做后续效果对比。默认仍建议优先使用 `-PipeMode` 的 YOLO 流程；RF-DETR 需要单独安装依赖。
 
