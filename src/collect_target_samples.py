@@ -52,6 +52,8 @@ def resolve_image_path(raw_path: str, csv_path: Path) -> Path:
     image_path = Path(raw_path)
     if image_path.is_absolute():
         return image_path
+    if image_path.exists():
+        return image_path
     return csv_path.parent / image_path
 
 

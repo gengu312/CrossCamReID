@@ -1997,6 +1997,23 @@ Invoke-Step "Collect target samples" {
         exit 2
     }
 
+    $RepoRelativeReviewDir = Join-Path $SmokeRoot "repo_relative_target_review"
+    $RepoRelativeCsv = Join-Path $SmokeRoot "repo-relative-target-samples.csv"
+    @(
+        "time,camera,source,target_similarity,image",
+        "2026-07-11 08:00:00,1,register,1.0000,README.md"
+    ) | Set-Content -LiteralPath $RepoRelativeCsv -Encoding UTF8
+    & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\collect_target_samples.ps1 `
+        -SamplesCsv $RepoRelativeCsv `
+        -OutputDir $RepoRelativeReviewDir `
+        -MinCount 1 `
+        -Clean `
+        -Strict
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Expected repository-relative target sample paths to resolve from the working directory."
+        exit $LASTEXITCODE
+    }
+
     $BadSampleDir = Join-Path $SmokeRoot "bad_target_sample_review"
     $BadSampleCsv = Join-Path $SmokeRoot "bad-target-samples.csv"
     @(
