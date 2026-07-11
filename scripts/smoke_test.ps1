@@ -792,14 +792,22 @@ from pathlib import Path
 import sys
 
 from src.camera_selector import (
+    BACKEND_LABELS,
     CAPTURE_SCENARIOS,
+    CAPTURE_SCENARIO_LABELS,
     CameraProbe,
+    DETECTOR_LABELS,
     PIPE_DETECTORS,
     RFDETR_SIZES,
+    backend_from_label,
     build_capture_command,
     build_crosscam_command,
+    camera_preview_layout,
     capture_order,
+    capture_scenario_from_label,
+    detector_from_label,
     detector_for_selector,
+    detector_label,
     default_selected_indexes,
     extra_arg_flag,
     extra_arg_value,
@@ -807,11 +815,13 @@ from src.camera_selector import (
     ordered_selected_indexes,
     parse_args,
     parse_preferred_indexes,
+    selected_camera_summary,
     selection_error,
     selector_extra_args,
     set_extra_arg_flag,
     set_extra_arg_pair,
     target_review_flags,
+    validate_detector_settings,
 )
 from src.crosscam_mvp import parse_args as parse_crosscam_args
 
@@ -831,6 +841,34 @@ if set(RFDETR_SIZES) != {"nano", "small", "base", "medium", "large", "xlarge", "
     raise SystemExit(f"Unexpected RF-DETR model sizes: {RFDETR_SIZES}")
 if set(PIPE_DETECTORS) != {"yolo", "rfdetr", "hybrid"}:
     raise SystemExit(f"Unexpected PipeMode detector set: {PIPE_DETECTORS}")
+if set(DETECTOR_LABELS) != {"motion", "yolo", "rfdetr", "hybrid"}:
+    raise SystemExit(f"Unexpected detector labels: {DETECTOR_LABELS}")
+if detector_from_label(detector_label("hybrid")) != "hybrid":
+    raise SystemExit("Expected detector display labels to round-trip.")
+if backend_from_label(BACKEND_LABELS["dshow"]) != "dshow":
+    raise SystemExit("Expected backend display labels to round-trip.")
+if capture_scenario_from_label(CAPTURE_SCENARIO_LABELS["hand_move"]) != "hand_move":
+    raise SystemExit("Expected capture scenario display labels to round-trip.")
+if validate_detector_settings("yolo", "bad", "bad", "bad") is not None:
+    raise SystemExit("Expected YOLO mode to ignore RF-DETR-only fields.")
+if validate_detector_settings("rfdetr", "-1", "0.25", "15") is None:
+    raise SystemExit("Expected negative RF-DETR class count to be rejected.")
+if validate_detector_settings("rfdetr", "1", "1.2", "15") is None:
+    raise SystemExit("Expected invalid RF-DETR confidence to be rejected.")
+if validate_detector_settings("hybrid", "1", "0.25", "0") is None:
+    raise SystemExit("Expected invalid hybrid fallback interval to be rejected.")
+if validate_detector_settings("hybrid", "1", "0.25", "15") is not None:
+    raise SystemExit("Expected valid hybrid settings to pass.")
+if camera_preview_layout(3) != (3, (285, 140)):
+    raise SystemExit("Expected three cameras to use one compact row.")
+if camera_preview_layout(2) != (2, (340, 155)):
+    raise SystemExit("Expected two cameras to use two compact columns.")
+ab_summary = selected_camera_summary([1, 3], swap=False)
+if ab_summary.find("1") >= ab_summary.find("3"):
+    raise SystemExit("Expected camera summary to preserve AB order.")
+ba_summary = selected_camera_summary([1, 3], swap=True)
+if ba_summary.find("3") >= ba_summary.find("1"):
+    raise SystemExit("Expected camera summary to show swapped BA order.")
 if extra_arg_value(args.extra_arg, "-Detector", "motion") != "rfdetr":
     raise SystemExit("Expected selector to read detector from extra args.")
 if parse_preferred_indexes("1,3,bad,3,-1") != [1, 3]:
