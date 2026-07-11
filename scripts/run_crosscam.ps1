@@ -16,7 +16,7 @@ param(
     [string]$RoiB = "80,80,480,220",
     [string]$RoiC = "80,80,480,220",
     [int]$WarmupFrames = 30,
-    [ValidateSet("motion", "yolo", "rfdetr")]
+    [ValidateSet("motion", "yolo", "rfdetr", "hybrid")]
     [string]$Detector = "motion",
     [int]$MinArea = 900,
     [double]$CrossThreshold = 0.65,
@@ -53,6 +53,8 @@ param(
     [string]$RfDetrClassIdMode = "auto",
     [int]$RfDetrCategoryIdOffset = 1,
     [switch]$RfDetrOptimize,
+    [ValidateRange(1, 1000)]
+    [int]$HybridFallbackInterval = 15,
     [double]$PredictionHorizon = 0.35,
     [string]$LogDir = "runs",
     [ValidateSet("AB", "BA")]
@@ -209,13 +211,14 @@ if ($PipeMode) {
     if ((-not $DetectorWasProvided) -or $Detector -eq "motion") {
         $Detector = "yolo"
     }
-    if ($Detector -eq "yolo") {
+    if ($Detector -eq "yolo" -or $Detector -eq "hybrid") {
         if ($YoloModel -eq "yolov8n.pt" -and (Test-Path $DefaultPipeModel)) {
             $YoloModel = $DefaultPipeModel
         } elseif ($YoloModel -eq "yolov8n.pt") {
             Write-Host "PipeMode warning: no trained pipe model was found under runs_yolo. Using yolov8n.pt for smoke testing only."
         }
-    } elseif ($Detector -eq "rfdetr") {
+    }
+    if ($Detector -eq "rfdetr" -or $Detector -eq "hybrid") {
         $DefaultRfDetrWeights = Resolve-RfDetrCheckpoint $RfDetrSize
         if ($RfDetrWeights -eq "" -and $DefaultRfDetrWeights -ne "") {
             $RfDetrWeights = $DefaultRfDetrWeights
@@ -346,7 +349,7 @@ if (-not $SkipInstall -and -not $PrintOnly) {
             exit $LASTEXITCODE
         }
     }
-    if ($Detector -eq "yolo") {
+    if ($Detector -eq "yolo" -or $Detector -eq "hybrid") {
         & $PythonExe -c "import ultralytics" *> $null
         if ($LASTEXITCODE -ne 0) {
             Write-Host "正在安装 YOLO 依赖 ultralytics..."
@@ -356,7 +359,7 @@ if (-not $SkipInstall -and -not $PrintOnly) {
             }
         }
     }
-    if ($Detector -eq "rfdetr") {
+    if ($Detector -eq "rfdetr" -or $Detector -eq "hybrid") {
         & $PythonExe -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('rfdetr') else 1)" *> $null
         if ($LASTEXITCODE -ne 0) {
             Write-Host "正在安装 RF-DETR 依赖 rfdetr..."
@@ -408,6 +411,7 @@ if ($SelectCameras) {
     Add-SelectorExtraPair "-RfDetrConf" "$RfDetrConf"
     Add-SelectorExtraPair "-RfDetrClassIdMode" $RfDetrClassIdMode
     Add-SelectorExtraPair "-RfDetrCategoryIdOffset" "$RfDetrCategoryIdOffset"
+    Add-SelectorExtraPair "-HybridFallbackInterval" "$HybridFallbackInterval"
     Add-SelectorExtraPair "-PredictionHorizon" "$PredictionHorizon"
     Add-SelectorExtraPair "-LogDir" $LogDir
     if ($YoloDevice -ne "") {
@@ -547,6 +551,7 @@ if ($Probe) {
         "--rfdetr-conf", "$RfDetrConf",
         "--rfdetr-class-id-mode", $RfDetrClassIdMode,
         "--rfdetr-category-id-offset", "$RfDetrCategoryIdOffset",
+        "--hybrid-fallback-interval", "$HybridFallbackInterval",
         "--prediction-horizon", "$PredictionHorizon",
         "--view-order", $ViewOrder,
         "--log-dir", $LogDir
@@ -620,6 +625,7 @@ if ($Probe) {
         "--rfdetr-conf", "$RfDetrConf",
         "--rfdetr-class-id-mode", $RfDetrClassIdMode,
         "--rfdetr-category-id-offset", "$RfDetrCategoryIdOffset",
+        "--hybrid-fallback-interval", "$HybridFallbackInterval",
         "--prediction-horizon", "$PredictionHorizon",
         "--view-order", $ViewOrder,
         "--log-dir", $LogDir
@@ -746,13 +752,17 @@ function Show-LaunchSummary {
     }
 
     Write-Host "  detector: $Detector, max_detections=$MaxDetections"
-    if ($Detector -eq "yolo") {
+    if ($Detector -eq "yolo" -or $Detector -eq "hybrid") {
         $YoloModelStatus = Format-ExistingPathStatus $YoloModel
         $YoloDeviceText = if ($YoloDevice -ne "") { $YoloDevice } else { "auto" }
         Write-Host "  yolo: model=$YoloModel ($YoloModelStatus), conf=$YoloConf, iou=$YoloIou, imgsz=$YoloImgsz, device=$YoloDeviceText"
-    } elseif ($Detector -eq "rfdetr") {
+    }
+    if ($Detector -eq "rfdetr" -or $Detector -eq "hybrid") {
         $RfDetrWeightsStatus = Format-ExistingPathStatus $RfDetrWeights
         Write-Host "  rfdetr: size=$RfDetrSize, weights=$RfDetrWeights ($RfDetrWeightsStatus), classes=$RfDetrNumClasses, conf=$RfDetrConf"
+    }
+    if ($Detector -eq "hybrid") {
+        Write-Host "  hybrid: YOLO primary, RF-DETR fallback every $HybridFallbackInterval primary frames when target matching fails"
     }
     Write-Host "  target: threshold=$TargetThreshold, update_alpha=$TargetUpdateAlpha, track_all_after_register=$TrackAllAfterRegister"
     Write-Host "  view: order=$ViewOrder, flip_a=$($FlipA -or $FlipBoth), flip_b=$($FlipB -or $FlipBoth), flip_c=$FlipC"

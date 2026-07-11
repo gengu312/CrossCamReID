@@ -234,6 +234,33 @@ Invoke-Step "RF-DETR pipe launcher" {
     Write-Host "RF-DETR pipe launcher ok."
 }
 
+Invoke-Step "Hybrid pipe launcher" {
+    $WrapperPath = Join-Path $RepoRoot "run_pipe_hybrid.bat"
+    if (-not (Test-Path -LiteralPath $WrapperPath)) {
+        Write-Host "Missing hybrid pipe launcher: $WrapperPath"
+        exit 2
+    }
+    $WrapperContent = Get-Content -LiteralPath $WrapperPath -Raw
+    foreach ($RequiredText in @(
+        "requirements-hybrid.txt",
+        "scripts\run_crosscam.ps1",
+        "-SelectCameras",
+        "-PipeMode",
+        "-Detector hybrid",
+        "-RfDetrNumClasses 1",
+        "-RfDetrClasses 0",
+        "-HybridFallbackInterval 15",
+        "-AnalyzeAfterRun",
+        "-AnalyzeTargetLockGate"
+    )) {
+        if ($WrapperContent -notmatch [regex]::Escape($RequiredText)) {
+            Write-Host "Expected run_pipe_hybrid.bat to include: $RequiredText"
+            exit 2
+        }
+    }
+    Write-Host "Hybrid pipe launcher ok."
+}
+
 Invoke-Step "Capture dataset defaults" {
     @'
 import sys
@@ -802,7 +829,7 @@ if set(CAPTURE_SCENARIOS) != {"stack", "single", "hand_move", "negative"}:
     raise SystemExit(f"Unexpected capture scenarios: {CAPTURE_SCENARIOS}")
 if set(RFDETR_SIZES) != {"nano", "small", "base", "medium", "large", "xlarge", "2xlarge"}:
     raise SystemExit(f"Unexpected RF-DETR model sizes: {RFDETR_SIZES}")
-if set(PIPE_DETECTORS) != {"yolo", "rfdetr"}:
+if set(PIPE_DETECTORS) != {"yolo", "rfdetr", "hybrid"}:
     raise SystemExit(f"Unexpected PipeMode detector set: {PIPE_DETECTORS}")
 if extra_arg_value(args.extra_arg, "-Detector", "motion") != "rfdetr":
     raise SystemExit("Expected selector to read detector from extra args.")
@@ -851,6 +878,10 @@ sys.argv = ["crosscam_mvp.py"]
 crosscam_args = parse_crosscam_args()
 if crosscam_args.camera_scan_order[:2] != [1, 3]:
     raise SystemExit(f"Expected crosscam auto scan to prefer 1,3, got {crosscam_args.camera_scan_order}.")
+if crosscam_args.hybrid_fallback_interval != 15:
+    raise SystemExit(
+        f"Expected CPU-safe hybrid fallback interval 15, got {crosscam_args.hybrid_fallback_interval}."
+    )
 extra_args = set_extra_arg_pair(
     ["-Detector", "motion", "-RfDetrSize", "small"],
     "-Detector",
@@ -864,6 +895,10 @@ if detector_for_selector(["-Detector", "rfdetr"], pipe_mode=True) != "rfdetr":
     raise SystemExit("Expected PipeMode selector to preserve explicit RF-DETR detector.")
 if detector_for_selector(["-Detector", "rfdetr"], pipe_mode=False) != "rfdetr":
     raise SystemExit("Expected RF-DETR selector default detector to be preserved.")
+if detector_for_selector(["-Detector", "hybrid"], pipe_mode=True) != "hybrid":
+    raise SystemExit("Expected PipeMode selector to preserve hybrid detector.")
+if detector_for_selector(["-Detector", "hybrid"], pipe_mode=False) != "hybrid":
+    raise SystemExit("Expected hybrid selector default detector to be preserved.")
 if detector_for_selector(["-Detector", "bad"], pipe_mode=False) != "motion":
     raise SystemExit("Expected invalid selector detector to fall back to motion.")
 if mousewheel_units(120, None) != -1:
@@ -937,6 +972,7 @@ rfdetr_extra_args = selector_extra_args(
     rfdetr_weights="runs_rfdetr/best.pth",
     rfdetr_num_classes="1",
     rfdetr_conf="0.42",
+    hybrid_fallback_interval="7",
 )
 if extra_arg_value(rfdetr_extra_args, "-RfDetrSize", "") != "small":
     raise SystemExit(f"Expected RF-DETR size to be passed from selector: {rfdetr_extra_args}")
@@ -946,6 +982,8 @@ if extra_arg_value(rfdetr_extra_args, "-RfDetrNumClasses", "") != "1":
     raise SystemExit(f"Expected RF-DETR class count to be passed from selector: {rfdetr_extra_args}")
 if extra_arg_value(rfdetr_extra_args, "-RfDetrConf", "") != "0.42":
     raise SystemExit(f"Expected RF-DETR confidence to be passed from selector: {rfdetr_extra_args}")
+if extra_arg_value(rfdetr_extra_args, "-HybridFallbackInterval", "") != "7":
+    raise SystemExit(f"Expected hybrid fallback interval to be passed from selector: {rfdetr_extra_args}")
 cleared_rfdetr_weights = selector_extra_args(
     rfdetr_extra_args,
     detector="rfdetr",
@@ -1131,11 +1169,13 @@ yolo.write_bytes(b"fake yolo")
 rfdetr.write_bytes(b"fake rfdetr")
 
 ready = collect_backend_statuses(root, available_modules={"ultralytics", "rfdetr"})
-if not ready["yolo"].project_ready or not ready["rfdetr"].project_ready:
-    raise SystemExit("Expected fake YOLO and RF-DETR project backends to be ready.")
+if not ready["yolo"].project_ready or not ready["rfdetr"].project_ready or not ready["hybrid"].project_ready:
+    raise SystemExit("Expected fake YOLO, RF-DETR, and hybrid project backends to be ready.")
 missing_dependency = collect_backend_statuses(root, available_modules={"ultralytics"})
 if missing_dependency["rfdetr"].project_ready or missing_dependency["rfdetr"].dependency_available:
     raise SystemExit("Expected RF-DETR to remain unavailable when its dependency is missing.")
+if missing_dependency["hybrid"].project_ready or missing_dependency["hybrid"].dependency_available:
+    raise SystemExit("Expected hybrid to remain unavailable when either dependency is missing.")
 if "rfdetr" not in selector_status_text(missing_dependency["rfdetr"]):
     raise SystemExit("Expected selector RF-DETR status to explain that the backend is not ready.")
 print("detector backend readiness ok")
@@ -1149,8 +1189,8 @@ print("detector backend readiness ok")
         exit $LASTEXITCODE
     }
     $BackendPayload = $BackendJson | ConvertFrom-Json
-    if (-not $BackendPayload.motion.project_ready -or -not $BackendPayload.PSObject.Properties["yolo"] -or -not $BackendPayload.PSObject.Properties["rfdetr"]) {
-        Write-Host "Expected backend status JSON to include motion, yolo, and rfdetr."
+    if (-not $BackendPayload.motion.project_ready -or -not $BackendPayload.PSObject.Properties["yolo"] -or -not $BackendPayload.PSObject.Properties["rfdetr"] -or -not $BackendPayload.PSObject.Properties["hybrid"]) {
+        Write-Host "Expected backend status JSON to include motion, yolo, rfdetr, and hybrid."
         exit 2
     }
 }

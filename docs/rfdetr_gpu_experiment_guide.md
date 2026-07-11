@@ -13,7 +13,7 @@ RF-DETR 已经作为可选检测后端接入项目，但目前还不能作为正
 - `datasets\pipe_rfdetr\` 已生成并通过训练前检查。
 - 已生成单周期试验权重 `runs_rfdetr\pipe_rfdetr_nano_cpu_smoke\checkpoint_best_regular.pth`，但综合效果仍低于当前 YOLO。
 
-所以现阶段继续以 YOLO 为默认后端。RF-DETR 只作为下一阶段的对比实验，不直接替换 YOLO。
+所以现阶段继续以 YOLO 为默认后端。RF-DETR 可单独作为下一阶段的对比实验，也可在 `hybrid` 模式中按需补检，但不直接替换 YOLO。
 
 ## 2. 已有素材能否复用
 
@@ -228,7 +228,38 @@ $env:Path = "D:\SoftWare\PythonEnvs\CrossCamReID-rfdetr-cpu\Scripts;" + $env:Pat
 
 这只是本机试验入口。日常演示仍运行默认 YOLO；不要在未切换独立环境时让 Python 3.14 自动安装 RF-DETR 训练依赖。
 
-## 11. 官方参考
+## 11. 与 YOLO 组合使用
+
+项目已增加 `hybrid` 实验模式，不需要在 YOLO 和 RF-DETR 之间完全二选一。它不是把两套结果直接合并，也不是让两套模型每帧并行：
+
+1. YOLO 负责每帧检测，是主后端。
+2. 只有注册目标且 YOLO 没有匹配到该目标时，RF-DETR 才按间隔补检。
+3. 同一摄像头短时补检还要求候选靠近上一次锁定位置，避免框突然跳到远处。
+4. RF-DETR 的候选必须继续通过现有目标外观相似度和 ID 接管规则。
+5. 每个组合帧最多执行一次 RF-DETR，避免多摄像头在 CPU 上连续重推理。
+6. 多路摄像头共享一份 YOLO 和一份 RF-DETR 模型，避免重复加载权重占用内存。
+
+本机可以运行：
+
+```powershell
+.\run_pipe_hybrid.bat
+```
+
+默认补检间隔为 15 个处理帧；可通过摄像头选择窗口或 `-HybridFallbackInterval` 调整。CPU 上不建议低于 15，有 NVIDIA 显卡后可从 5 开始对比。
+
+使用 `03_hand_occlusion` 录像和默认 15 帧补检间隔跑 500 帧的本机结果：
+
+```text
+RF-DETR 调用：14 次
+候选：164 个
+通过相似度门并恢复 G001：1 次
+恢复候选相似度：0.777
+距上次锁定位置：19.8px
+```
+
+结果说明混合分支能够实际补检并通过安全门恢复软件 ID。不过本次自动注册框内包含多根相邻铅笔，不能只凭这次日志判断恢复框在物理上一定是原来那一根。后续应先改善单根检测框、在显卡服务器上增加训练周期，并用人工确认过的录像逐帧复核，再决定是否把 `hybrid` 用于正式演示。
+
+## 12. 官方参考
 
 - RF-DETR 仓库：<https://github.com/roboflow/rf-detr>
 - RF-DETR 数据集格式：<https://rfdetr.roboflow.com/latest/learn/train/dataset-formats/>

@@ -28,3 +28,4 @@ datasets/pipe_yolo/labels/**/*
 !datasets/pipe_yolo/images/**/.gitkeep
 !datasets/pipe_yolo/labels/**/.gitkeep
 *.pt
+*.pth

@@ -482,14 +482,17 @@ class YoloDetector:
         max_shape_ratio: float = 1.0,
         min_long_side: int = 0,
         max_short_side: int = 0,
+        model: Optional[object] = None,
     ) -> None:
-        try:
-            from ultralytics import YOLO
-        except ImportError as exc:
-            raise RuntimeError(
-                "YOLO detector requires ultralytics. Install it with: "
-                "python -m pip install ultralytics"
-            ) from exc
+        if model is None:
+            try:
+                from ultralytics import YOLO
+            except ImportError as exc:
+                raise RuntimeError(
+                    "YOLO detector requires ultralytics. Install it with: "
+                    "python -m pip install ultralytics"
+                ) from exc
+            model = YOLO(model_path)
 
         self.camera_id = camera_id
         self.model_path = model_path
@@ -505,7 +508,7 @@ class YoloDetector:
         self.max_shape_ratio = max_shape_ratio
         self.min_long_side = min_long_side
         self.max_short_side = max_short_side
-        self.model = YOLO(model_path)
+        self.model = model
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
         view, offset_x, offset_y = crop_roi(frame, self.roi)
@@ -601,21 +604,28 @@ class RfDetrDetector:
         min_long_side: int = 0,
         max_short_side: int = 0,
         optimize: bool = False,
+        model: Optional[object] = None,
     ) -> None:
-        try:
-            import rfdetr
-        except ImportError as exc:
-            raise RuntimeError(
-                "RF-DETR detector requires rfdetr. Install it with: "
-                "python -m pip install -r requirements-rfdetr.txt"
-            ) from exc
-
         if model_size not in self.MODEL_CLASSES:
             raise ValueError(f"Unsupported RF-DETR model size: {model_size}")
 
-        model_class = getattr(rfdetr, self.MODEL_CLASSES[model_size], None)
-        if model_class is None:
-            raise RuntimeError(f"Installed rfdetr does not provide {self.MODEL_CLASSES[model_size]}.")
+        created_model = model is None
+        if created_model:
+            try:
+                import rfdetr
+            except ImportError as exc:
+                raise RuntimeError(
+                    "RF-DETR detector requires rfdetr. Install it with: "
+                    "python -m pip install -r requirements-rfdetr.txt"
+                ) from exc
+
+            model_class = getattr(rfdetr, self.MODEL_CLASSES[model_size], None)
+            if model_class is None:
+                raise RuntimeError(f"Installed rfdetr does not provide {self.MODEL_CLASSES[model_size]}.")
+            model_kwargs = {"num_classes": num_classes} if num_classes > 0 else {}
+            if weights:
+                model_kwargs["pretrain_weights"] = weights
+            model = model_class(**model_kwargs)
 
         self.camera_id = camera_id
         self.model_size = model_size
@@ -633,11 +643,8 @@ class RfDetrDetector:
         self.min_long_side = min_long_side
         self.max_short_side = max_short_side
 
-        model_kwargs = {"num_classes": num_classes} if num_classes > 0 else {}
-        if weights:
-            model_kwargs["pretrain_weights"] = weights
-        self.model = model_class(**model_kwargs)
-        if optimize and hasattr(self.model, "optimize_for_inference"):
+        self.model = model
+        if created_model and optimize and hasattr(self.model, "optimize_for_inference"):
             optimized = self.model.optimize_for_inference()
             if optimized is not None:
                 self.model = optimized
@@ -744,6 +751,51 @@ class RfDetrDetector:
         detections.sort(key=lambda item: item.score, reverse=True)
         limit = 1 if self.single_object else self.max_detections
         return detections[:limit]
+
+
+class HybridDetector:
+    def __init__(self, primary: YoloDetector, fallback: RfDetrDetector, fallback_interval: int = 15) -> None:
+        if primary.camera_id != fallback.camera_id:
+            raise ValueError("Hybrid detector camera ids must match.")
+        if fallback_interval <= 0:
+            raise ValueError("Hybrid fallback interval must be greater than 0.")
+        self.camera_id = primary.camera_id
+        self.primary = primary
+        self.fallback = fallback
+        self.fallback_interval = fallback_interval
+        self.frame_index = 0
+        self.last_fallback_frame = -fallback_interval
+        self.fallback_calls = 0
+        self.fallback_candidates = 0
+        self.fallback_accepted = 0
+
+    def detect(self, frame: np.ndarray) -> list[Detection]:
+        self.frame_index += 1
+        return self.primary.detect(frame)
+
+    def fallback_due(self) -> bool:
+        return self.frame_index - self.last_fallback_frame >= self.fallback_interval
+
+    def detect_fallback(self, frame: np.ndarray) -> list[Detection]:
+        if not self.fallback_due():
+            return []
+        self.last_fallback_frame = self.frame_index
+        self.fallback_calls += 1
+        detections = self.fallback.detect(frame)
+        self.fallback_candidates += len(detections)
+        return detections
+
+    def note_fallback_accepted(self) -> None:
+        self.fallback_accepted += 1
+
+
+def hybrid_detector_stats(detectors: list[object]) -> dict[str, int]:
+    hybrid_detectors = [detector for detector in detectors if isinstance(detector, HybridDetector)]
+    return {
+        "calls": sum(detector.fallback_calls for detector in hybrid_detectors),
+        "candidates": sum(detector.fallback_candidates for detector in hybrid_detectors),
+        "accepted": sum(detector.fallback_accepted for detector in hybrid_detectors),
+    }
 
 
 class CrossCameraTracker:
@@ -976,6 +1028,9 @@ class CrossCameraTracker:
                 if track.global_id == self.registered_target_id:
                     return track.camera_id
         return None
+
+    def active_registered_target_camera(self) -> Optional[int]:
+        return self._active_registered_target_camera()
 
     def _find_lost_registered_target(
         self,
@@ -1367,6 +1422,102 @@ def apply_target_profile(
     if keep_all:
         return detections
     return [best]
+
+
+def hybrid_fallback_camera_order(
+    detectors: list[object],
+    target_profile: TargetProfile,
+    tracker: CrossCameraTracker,
+) -> list[int]:
+    camera_ids = [camera_id for camera_id, detector in enumerate(detectors) if isinstance(detector, HybridDetector)]
+    active_camera = tracker.active_registered_target_camera()
+    if active_camera in camera_ids:
+        return [active_camera]
+
+    last_camera = target_profile.last_camera_id
+    if last_camera not in camera_ids:
+        return camera_ids
+    return [camera_id for camera_id in camera_ids if camera_id != last_camera] + [last_camera]
+
+
+def apply_target_profile_with_hybrid_fallback(
+    raw_detections_by_camera: list[list[Detection]],
+    frames: list[np.ndarray],
+    detectors: list[object],
+    target_profile: TargetProfile,
+    tracker: CrossCameraTracker,
+    args: argparse.Namespace,
+    log_dir: Path,
+    now: float,
+) -> list[list[Detection]]:
+    def apply_profile(detections: list[Detection], keep_all: bool) -> list[Detection]:
+        return apply_target_profile(
+            detections,
+            target_profile,
+            args.target_threshold,
+            args.target_update_alpha,
+            keep_all,
+            stick_distance=args.target_stick_distance,
+            switch_margin=args.target_switch_margin,
+            log_dir=log_dir,
+            now=now,
+            sample_min_similarity=args.target_sample_min_similarity,
+            sample_min_interval=args.target_sample_min_interval,
+            sample_max_count=args.target_sample_max_count,
+            can_claim_target=lambda detection: tracker._can_claim_registered_target(detection, now),
+        )
+
+    filtered_by_camera = [
+        apply_profile(detections, args.track_all_after_register)
+        for detections in raw_detections_by_camera
+    ]
+    if not target_profile.active:
+        return filtered_by_camera
+    if any(detection.is_target_match for detections in filtered_by_camera for detection in detections):
+        return filtered_by_camera
+
+    for camera_id in hybrid_fallback_camera_order(detectors, target_profile, tracker):
+        detector = detectors[camera_id]
+        if not isinstance(detector, HybridDetector):
+            continue
+        calls_before = detector.fallback_calls
+        fallback_detections = detector.detect_fallback(frames[camera_id])
+        if detector.fallback_calls == calls_before:
+            continue
+
+        if tracker.active_registered_target_camera() == camera_id:
+            fallback_detections = [
+                detection
+                for detection in fallback_detections
+                if (distance := target_profile.distance_from_last(detection)) is not None
+                and distance <= args.target_stick_distance
+            ]
+
+        accepted = apply_profile(fallback_detections, False)
+        if accepted:
+            detector.note_fallback_accepted()
+            if args.track_all_after_register:
+                filtered_by_camera[camera_id].extend(accepted)
+            else:
+                filtered_by_camera[camera_id] = accepted
+            detection = accepted[0]
+            global_id = tracker.registered_target_id or 1
+            message = f"摄像头{camera_id + 1}：YOLO 未匹配目标，RF-DETR 补检恢复 G{global_id:03d}"
+            tracker.events.appendleft(f"{time.strftime('%H:%M:%S')} {message}")
+            if tracker.event_logger is not None:
+                tracker.event_logger.write(
+                    now,
+                    "hybrid_fallback",
+                    camera_id,
+                    global_id,
+                    message,
+                    target_similarity=detection.target_similarity,
+                    target_choice=detection.target_choice,
+                    target_distance=detection.target_distance,
+                    bbox=detection.bbox,
+                )
+        break
+    return filtered_by_camera
 
 
 def select_stable_target_match(
@@ -2194,6 +2345,67 @@ def roi_for_camera(args: argparse.Namespace, camera_id: int) -> Optional[tuple[i
     return args.roi_c
 
 
+def create_yolo_detector(
+    args: argparse.Namespace,
+    camera_id: int,
+    classes: Optional[list[int]],
+    model: Optional[object] = None,
+) -> YoloDetector:
+    return YoloDetector(
+        camera_id,
+        args.yolo_model,
+        confidence=args.yolo_conf,
+        iou=args.yolo_iou,
+        image_size=args.yolo_imgsz,
+        device=args.yolo_device,
+        classes=classes,
+        roi=roi_for_camera(args, camera_id),
+        single_object=args.single_object,
+        max_detections=args.max_detections,
+        max_area_ratio=args.max_area_ratio,
+        max_shape_ratio=args.max_shape_ratio,
+        min_long_side=args.min_long_side,
+        max_short_side=args.max_short_side,
+        model=model,
+    )
+
+
+def validate_rfdetr_args(args: argparse.Namespace) -> None:
+    if args.rfdetr_num_classes < 0:
+        raise RuntimeError("--rfdetr-num-classes 不能小于 0。")
+    if not 0.0 <= args.rfdetr_conf <= 1.0:
+        raise RuntimeError("--rfdetr-conf 必须在 0 到 1 之间。")
+    if args.rfdetr_category_id_offset < 0:
+        raise RuntimeError("--rfdetr-category-id-offset 不能小于 0。")
+
+
+def create_rfdetr_detector(
+    args: argparse.Namespace,
+    camera_id: int,
+    classes: Optional[list[int]],
+    model: Optional[object] = None,
+) -> RfDetrDetector:
+    return RfDetrDetector(
+        camera_id,
+        model_size=args.rfdetr_size,
+        weights=args.rfdetr_weights,
+        num_classes=args.rfdetr_num_classes,
+        confidence=args.rfdetr_conf,
+        classes=classes,
+        class_id_mode=args.rfdetr_class_id_mode,
+        category_id_offset=args.rfdetr_category_id_offset,
+        roi=roi_for_camera(args, camera_id),
+        single_object=args.single_object,
+        max_detections=args.max_detections,
+        max_area_ratio=args.max_area_ratio,
+        max_shape_ratio=args.max_shape_ratio,
+        min_long_side=args.min_long_side,
+        max_short_side=args.max_short_side,
+        optimize=args.rfdetr_optimize,
+        model=model,
+    )
+
+
 def build_detectors(args: argparse.Namespace, camera_count: int):
     if args.detector == "motion":
         return [
@@ -2215,55 +2427,29 @@ def build_detectors(args: argparse.Namespace, camera_count: int):
 
     if args.detector == "yolo":
         classes = parse_yolo_classes(args.yolo_classes)
-        return [
-            YoloDetector(
-                camera_id,
-                args.yolo_model,
-                confidence=args.yolo_conf,
-                iou=args.yolo_iou,
-                image_size=args.yolo_imgsz,
-                device=args.yolo_device,
-                classes=classes,
-                roi=roi_for_camera(args, camera_id),
-                single_object=args.single_object,
-                max_detections=args.max_detections,
-                max_area_ratio=args.max_area_ratio,
-                max_shape_ratio=args.max_shape_ratio,
-                min_long_side=args.min_long_side,
-                max_short_side=args.max_short_side,
-            )
-            for camera_id in range(camera_count)
-        ]
+        return [create_yolo_detector(args, camera_id, classes) for camera_id in range(camera_count)]
 
     if args.detector == "rfdetr":
-        if args.rfdetr_num_classes < 0:
-            raise RuntimeError("--rfdetr-num-classes 不能小于 0。")
-        if not 0.0 <= args.rfdetr_conf <= 1.0:
-            raise RuntimeError("--rfdetr-conf 必须在 0 到 1 之间。")
-        if args.rfdetr_category_id_offset < 0:
-            raise RuntimeError("--rfdetr-category-id-offset 不能小于 0。")
+        validate_rfdetr_args(args)
         classes = parse_class_ids(args.rfdetr_classes, "RF-DETR classes")
-        return [
-            RfDetrDetector(
-                camera_id,
-                model_size=args.rfdetr_size,
-                weights=args.rfdetr_weights,
-                num_classes=args.rfdetr_num_classes,
-                confidence=args.rfdetr_conf,
-                classes=classes,
-                class_id_mode=args.rfdetr_class_id_mode,
-                category_id_offset=args.rfdetr_category_id_offset,
-                roi=roi_for_camera(args, camera_id),
-                single_object=args.single_object,
-                max_detections=args.max_detections,
-                max_area_ratio=args.max_area_ratio,
-                max_shape_ratio=args.max_shape_ratio,
-                min_long_side=args.min_long_side,
-                max_short_side=args.max_short_side,
-                optimize=args.rfdetr_optimize,
-            )
-            for camera_id in range(camera_count)
-        ]
+        return [create_rfdetr_detector(args, camera_id, classes) for camera_id in range(camera_count)]
+
+    if args.detector == "hybrid":
+        if args.hybrid_fallback_interval <= 0:
+            raise RuntimeError("--hybrid-fallback-interval 必须大于 0。")
+        validate_rfdetr_args(args)
+        yolo_classes = parse_yolo_classes(args.yolo_classes)
+        rfdetr_classes = parse_class_ids(args.rfdetr_classes, "RF-DETR classes")
+        detectors: list[HybridDetector] = []
+        shared_yolo_model: Optional[object] = None
+        shared_rfdetr_model: Optional[object] = None
+        for camera_id in range(camera_count):
+            primary = create_yolo_detector(args, camera_id, yolo_classes, shared_yolo_model)
+            fallback = create_rfdetr_detector(args, camera_id, rfdetr_classes, shared_rfdetr_model)
+            shared_yolo_model = primary.model
+            shared_rfdetr_model = fallback.model
+            detectors.append(HybridDetector(primary, fallback, args.hybrid_fallback_interval))
+        return detectors
 
     raise ValueError(f"Unsupported detector: {args.detector}")
 
@@ -2309,7 +2495,7 @@ def run_config_message(
                     f"video_{label}_frames={source.frame_count}",
                 ]
             )
-    if args.detector == "yolo":
+    if args.detector in ("yolo", "hybrid"):
         parts.extend(
             [
                 f"yolo_model={args.yolo_model}",
@@ -2320,7 +2506,7 @@ def run_config_message(
                 f"yolo_classes={args.yolo_classes or 'all'}",
             ]
         )
-    if args.detector == "rfdetr":
+    if args.detector in ("rfdetr", "hybrid"):
         parts.extend(
             [
                 f"rfdetr_size={args.rfdetr_size}",
@@ -2331,6 +2517,8 @@ def run_config_message(
                 f"rfdetr_class_id_mode={args.rfdetr_class_id_mode}",
             ]
         )
+    if args.detector == "hybrid":
+        parts.append(f"hybrid_fallback_interval={args.hybrid_fallback_interval}")
     return "; ".join(parts)
 
 
@@ -2343,6 +2531,7 @@ def write_video_run_manifest(
     processed_frames: int,
     cross_camera_match_observed: bool,
     event_log: Optional[Path],
+    detectors: Optional[list[object]] = None,
 ) -> Optional[Path]:
     video_sources = [source for source in sources if isinstance(source, VideoFileSource)]
     if args.no_log or len(video_sources) != len(sources):
@@ -2352,7 +2541,7 @@ def write_video_run_manifest(
         "type": args.detector,
         "max_detections": args.max_detections,
     }
-    if args.detector == "yolo":
+    if args.detector in ("yolo", "hybrid"):
         detector["yolo"] = {
             "model": str(Path(args.yolo_model).resolve()) if Path(args.yolo_model).exists() else args.yolo_model,
             "confidence": args.yolo_conf,
@@ -2360,13 +2549,16 @@ def write_video_run_manifest(
             "image_size": args.yolo_imgsz,
             "device": args.yolo_device or "auto",
         }
-    elif args.detector == "rfdetr":
+    if args.detector in ("rfdetr", "hybrid"):
         detector["rfdetr"] = {
             "size": args.rfdetr_size,
             "weights": args.rfdetr_weights or "default",
             "confidence": args.rfdetr_conf,
             "num_classes": args.rfdetr_num_classes,
         }
+    if args.detector == "hybrid":
+        detector["fallback_interval"] = args.hybrid_fallback_interval
+        detector["fallback_stats"] = hybrid_detector_stats(detectors or [])
 
     payload = {
         "schema_version": 1,
@@ -2427,6 +2619,8 @@ def probe_cameras(max_index: int, backend: str) -> None:
 def run(args: argparse.Namespace) -> int:
     if args.video_playback_rate <= 0:
         raise RuntimeError("--video-playback-rate 必须大于 0。")
+    if args.detector == "hybrid" and args.hybrid_fallback_interval <= 0:
+        raise RuntimeError("--hybrid-fallback-interval 必须大于 0。")
     video_paths = resolve_video_paths(args)
     if video_paths and args.probe:
         raise RuntimeError("--probe 不能和离线视频参数同时使用。")
@@ -2476,6 +2670,7 @@ def run(args: argparse.Namespace) -> int:
         processed,
         matched_seen,
         event_logger.csv_path,
+        detectors,
     )
     frame_interval = video_frame_interval(sources)
     wait_delay_ms = (
@@ -2515,24 +2710,16 @@ def run(args: argparse.Namespace) -> int:
                     log_dir,
                     now,
                 )
-            detections_by_camera = [
-                apply_target_profile(
-                    raw_detections,
-                    target_profile,
-                    args.target_threshold,
-                    args.target_update_alpha,
-                    args.track_all_after_register,
-                    stick_distance=args.target_stick_distance,
-                    switch_margin=args.target_switch_margin,
-                    log_dir=log_dir,
-                    now=now,
-                    sample_min_similarity=args.target_sample_min_similarity,
-                    sample_min_interval=args.target_sample_min_interval,
-                    sample_max_count=args.target_sample_max_count,
-                    can_claim_target=lambda detection: tracker._can_claim_registered_target(detection, now),
-                )
-                for raw_detections in raw_detections_by_camera
-            ]
+            detections_by_camera = apply_target_profile_with_hybrid_fallback(
+                raw_detections_by_camera,
+                frames,
+                detectors,
+                target_profile,
+                tracker,
+                args,
+                log_dir,
+                now,
+            )
             tracks_by_camera = [
                 tracker.update(camera_id, detections_by_camera[camera_id], now)
                 for camera_id in range(camera_count)
@@ -2701,6 +2888,7 @@ def run(args: argparse.Namespace) -> int:
                 processed,
                 matched_seen,
                 event_logger.csv_path,
+                detectors,
             )
         for source in sources:
             source.release()
@@ -2710,6 +2898,13 @@ def run(args: argparse.Namespace) -> int:
 
     print(f"已处理帧数：{processed}")
     print(f"是否观察到跨摄像头匹配：{'是' if matched_seen else '否'}")
+    if args.detector == "hybrid":
+        fallback_stats = hybrid_detector_stats(detectors)
+        print(
+            "混合补检统计："
+            f"调用={fallback_stats['calls']}，候选={fallback_stats['candidates']}，"
+            f"恢复={fallback_stats['accepted']}"
+        )
     if event_logger.csv_path is not None:
         print(f"事件日志：{event_logger.csv_path}")
     if manifest_path is not None:
@@ -2775,9 +2970,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--detector",
-        choices=("motion", "yolo", "rfdetr"),
+        choices=("motion", "yolo", "rfdetr", "hybrid"),
         default="motion",
-        help="Detection backend. motion is the stable MVP; yolo uses Ultralytics; rfdetr uses Roboflow RF-DETR.",
+        help="Detection backend. hybrid uses YOLO normally and RF-DETR only for registered-target fallback.",
     )
     parser.add_argument("--min-area", type=int, default=900, help="Minimum moving contour area.")
     parser.add_argument(
@@ -2858,6 +3053,12 @@ def parse_args() -> argparse.Namespace:
         "--rfdetr-optimize",
         action="store_true",
         help="Call RF-DETR optimize_for_inference() when the installed rfdetr package supports it.",
+    )
+    parser.add_argument(
+        "--hybrid-fallback-interval",
+        type=int,
+        default=15,
+        help="Minimum primary frames between RF-DETR fallback attempts per camera in hybrid mode.",
     )
     parser.add_argument("--log-dir", default="runs", help="Directory for per-run CSV event logs.")
     parser.add_argument("--no-log", action="store_true", help="Disable CSV event logging.")

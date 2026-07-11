@@ -1,0 +1,3 @@
+-r requirements.txt
+-r requirements-yolo.txt
+-r requirements-rfdetr.txt

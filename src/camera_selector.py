@@ -35,8 +35,8 @@ BACKENDS = {
     "any": cv2.CAP_ANY,
 }
 
-DETECTORS = ("motion", "yolo", "rfdetr")
-PIPE_DETECTORS = ("yolo", "rfdetr")
+DETECTORS = ("motion", "yolo", "rfdetr", "hybrid")
+PIPE_DETECTORS = ("yolo", "rfdetr", "hybrid")
 CAPTURE_SCENARIOS = ("stack", "single", "hand_move", "negative")
 RFDETR_SIZES = ("nano", "small", "base", "medium", "large", "xlarge", "2xlarge")
 
@@ -327,6 +327,7 @@ def selector_extra_args(
     rfdetr_weights: str | None = None,
     rfdetr_num_classes: str | None = None,
     rfdetr_conf: str | None = None,
+    hybrid_fallback_interval: str | None = None,
 ) -> list[str]:
     collect_target_samples, target_sample_preview = target_review_flags(
         target_lock_gate,
@@ -348,6 +349,8 @@ def selector_extra_args(
         updated = set_extra_arg_pair(updated, "-RfDetrNumClasses", rfdetr_num_classes)
     if rfdetr_conf is not None:
         updated = set_extra_arg_pair(updated, "-RfDetrConf", rfdetr_conf)
+    if hybrid_fallback_interval is not None:
+        updated = set_extra_arg_pair(updated, "-HybridFallbackInterval", hybrid_fallback_interval)
     return updated
 
 
@@ -375,7 +378,7 @@ def build_selector(args: argparse.Namespace, probes: list[CameraProbe]) -> int:
 
     root = tk.Tk()
     root.title("选择摄像头 - CrossCamReID")
-    root.geometry("820x760")
+    root.geometry("820x790")
 
     title = tk.Label(root, text="选择要使用的摄像头", font=("Microsoft YaHei UI", 16, "bold"))
     title.pack(anchor="w", padx=16, pady=(14, 4))
@@ -406,6 +409,9 @@ def build_selector(args: argparse.Namespace, probes: list[CameraProbe]) -> int:
     rfdetr_weights_var = tk.StringVar(value=extra_arg_value(args.extra_arg, "-RfDetrWeights", ""))
     rfdetr_num_classes_var = tk.StringVar(value=extra_arg_value(args.extra_arg, "-RfDetrNumClasses", "0"))
     rfdetr_conf_var = tk.StringVar(value=extra_arg_value(args.extra_arg, "-RfDetrConf", "0.35"))
+    hybrid_fallback_interval_var = tk.StringVar(
+        value=extra_arg_value(args.extra_arg, "-HybridFallbackInterval", "15")
+    )
     capture_scenario_var = tk.StringVar(value=args.capture_scenario)
     capture_output_root_var = tk.StringVar(value=args.capture_output_root)
     backend_status_var = tk.StringVar()
@@ -426,6 +432,12 @@ def build_selector(args: argparse.Namespace, probes: list[CameraProbe]) -> int:
     tk.Entry(rfdetr_frame, textvariable=rfdetr_num_classes_var, width=6).pack(side="left", padx=(0, 10))
     tk.Label(rfdetr_frame, text="置信度").pack(side="left", padx=(0, 6))
     tk.Entry(rfdetr_frame, textvariable=rfdetr_conf_var, width=6).pack(side="left")
+
+    hybrid_frame = tk.Frame(options_frame)
+    hybrid_frame.pack(fill="x", pady=(0, 6))
+    tk.Label(hybrid_frame, text="混合补检间隔").pack(side="left", padx=(0, 6))
+    tk.Entry(hybrid_frame, textvariable=hybrid_fallback_interval_var, width=6).pack(side="left", padx=(0, 6))
+    tk.Label(hybrid_frame, text="帧").pack(side="left")
 
     backend_status_label = tk.Label(
         options_frame,
@@ -588,6 +600,7 @@ def build_selector(args: argparse.Namespace, probes: list[CameraProbe]) -> int:
             rfdetr_weights_var.get(),
             rfdetr_num_classes_var.get(),
             rfdetr_conf_var.get(),
+            hybrid_fallback_interval_var.get(),
         )
         start_crosscam(
             repo_root,

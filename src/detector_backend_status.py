@@ -79,6 +79,17 @@ def collect_backend_statuses(
     rfdetr_dependency = module_available("rfdetr", module_set)
     yolo_weights = find_yolo_pipe_weights(root, yolo_model)
     rfdetr_pipe_weights = find_rfdetr_pipe_weights(root, rfdetr_size, rfdetr_weights)
+    hybrid_ready = (
+        yolo_dependency
+        and rfdetr_dependency
+        and yolo_weights is not None
+        and rfdetr_pipe_weights is not None
+    )
+    hybrid_weights = []
+    if yolo_weights is not None:
+        hybrid_weights.append(f"YOLO={yolo_weights}")
+    if rfdetr_pipe_weights is not None:
+        hybrid_weights.append(f"RF-DETR={rfdetr_pipe_weights}")
 
     return {
         "motion": DetectorBackendStatus(
@@ -108,6 +119,17 @@ def collect_backend_statuses(
                 "项目 RF-DETR 已就绪。"
                 if rfdetr_dependency and rfdetr_pipe_weights is not None
                 else "RF-DETR 只是可选入口；需要安装 rfdetr 并训练项目专用权重。"
+            ),
+        ),
+        "hybrid": DetectorBackendStatus(
+            detector="hybrid",
+            dependency_available=yolo_dependency and rfdetr_dependency,
+            project_weights="；".join(hybrid_weights),
+            project_ready=hybrid_ready,
+            detail=(
+                "YOLO 主检与 RF-DETR 按需补检均已就绪。"
+                if hybrid_ready
+                else "混合模式需要同时安装 ultralytics、rfdetr，并准备两种项目权重。"
             ),
         ),
     }
@@ -143,7 +165,7 @@ def main() -> int:
     if args.json:
         print(json.dumps({name: asdict(status) for name, status in statuses.items()}, ensure_ascii=False, indent=2))
     else:
-        for name in ("motion", "yolo", "rfdetr"):
+        for name in ("motion", "yolo", "rfdetr", "hybrid"):
             print(selector_status_text(statuses[name]))
     return 0
 
