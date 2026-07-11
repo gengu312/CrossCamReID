@@ -1,1 +1,1 @@
-rfdetr>=1.8
+rfdetr[train]>=1.8,<1.9

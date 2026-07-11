@@ -31,7 +31,7 @@ rfdetr：Roboflow RF-DETR 检测入口，用作后续可选检测后端对比
 
 ## 技术栈与版本
 
-当前仓库包含 OpenCV MVP 稳定版、YOLO 检测入口和第一版自训练 `pipe` 模型；RF-DETR 已作为可选检测后端接入，但还没有本地训练权重。
+当前仓库包含 OpenCV MVP 稳定版、YOLO 检测入口和第一版自训练 `pipe` 模型；RF-DETR 已作为可选检测后端接入，并完成一次本地 CPU 单周期流程验证，但该试验权重的综合效果仍低于当前 YOLO，不作为默认后端。
 
 当前技术栈：
 
@@ -561,6 +561,8 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo -
 ### 7. RF-DETR 可选检测入口
 
 RF-DETR 现在作为可选检测后端接入，用来和 YOLO 做后续效果对比。默认仍建议优先使用 `-PipeMode` 的 YOLO 流程；RF-DETR 需要单独安装依赖。
+
+完整的服务器准备、数据迁移、训练、评估和接回项目步骤见 [RF-DETR 显卡服务器实验说明](docs/rfdetr_gpu_experiment_guide.md)。
 
 “可选择”只表示代码入口已经接入。只有自检同时显示 `rfdetr` 依赖已安装并找到 `runs_rfdetr/` 下的项目训练权重时，RF-DETR 才算真正用于本项目；否则当前正式识别仍是 YOLO。
 

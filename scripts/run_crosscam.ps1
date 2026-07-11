@@ -357,7 +357,7 @@ if (-not $SkipInstall -and -not $PrintOnly) {
         }
     }
     if ($Detector -eq "rfdetr") {
-        & $PythonExe -c "import rfdetr" *> $null
+        & $PythonExe -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('rfdetr') else 1)" *> $null
         if ($LASTEXITCODE -ne 0) {
             Write-Host "正在安装 RF-DETR 依赖 rfdetr..."
             & $PythonExe -m pip install -r requirements-rfdetr.txt
