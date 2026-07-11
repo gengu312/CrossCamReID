@@ -498,6 +498,14 @@ runs/video_replay/<视频所在场景目录>/<运行时间>/
 
 目录中会保存事件 CSV、`latest-summary.json`、`latest-summary.md`、目标样本和 `run_manifest.json`。运行清单记录视频绝对路径、帧率、总帧数、检测模型参数、实际处理帧数和跨摄像头匹配结果，后续可以确认某份结果对应哪组素材和参数。需要指定输出位置时可显式传入 `-LogDir`，程序不会改写该路径。
 
+修改锁定逻辑后，可以用两次运行的 `latest-summary.json` 做回归门槛检查。默认要求匹配次数不少于基线的 98%，切换次数、注册后新 ID 和注册目标离开次数不能增加，平均/最大位移最多增加 10%：
+
+```powershell
+.\compare_target_lock_runs.bat -Baseline runs\baseline\latest-summary.json -Candidate runs\candidate\latest-summary.json
+```
+
+检查返回非零退出码时不应提交该锁定算法改动。阈值可以通过 `-MinMatchRatio`、`-MaxSwitchIncrease`、`-MaxAverageDistanceRatio` 和 `-MaxMaximumDistanceRatio` 调整。
+
 慢速播放便于点击和观察：
 
 ```powershell

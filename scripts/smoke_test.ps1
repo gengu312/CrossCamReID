@@ -70,6 +70,7 @@ Invoke-Step "Python compile" {
         src\train_rfdetr.py `
         src\evaluate_rfdetr.py `
         src\compare_detector_eval.py `
+        src\compare_target_lock_runs.py `
         src\analyze_run_log.py `
         src\analyze_yolo_eval.py `
         src\realsense_depth_probe.py
@@ -2241,6 +2242,49 @@ Invoke-Step "Analyze target jump gate" {
     }
     Write-Host "Invalid target jump rejected."
     & $PythonExe -c "pass"
+}
+
+Invoke-Step "Compare target-lock regression summaries" {
+    $RegressionDir = Join-Path $SmokeRoot "target_lock_regression"
+    New-Item -ItemType Directory -Force -Path $RegressionDir | Out-Null
+    $BaselineSummary = Join-Path $RegressionDir "baseline.json"
+    $PassingSummary = Join-Path $RegressionDir "passing.json"
+    $FailingSummary = Join-Path $RegressionDir "failing.json"
+    $BasePayload = [ordered]@{
+        run_config = [ordered]@{ video_a_path = "same-video.mp4" }
+        target_match_count = 100
+        target_choice_counts = [ordered]@{ switch = 2 }
+        avg_target_distance = 2.0
+        max_target_distance = 50.0
+        new_after_register_count = 3
+        registered_left_count = 0
+    }
+    $BasePayload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $BaselineSummary -Encoding UTF8
+    $BasePayload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $PassingSummary -Encoding UTF8
+    $FailPayload = [ordered]@{}
+    foreach ($Entry in $BasePayload.GetEnumerator()) {
+        $FailPayload[$Entry.Key] = $Entry.Value
+    }
+    $FailPayload.max_target_distance = 70.0
+    $FailPayload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $FailingSummary -Encoding UTF8
+
+    & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compare_target_lock_runs.ps1 `
+        -Baseline $BaselineSummary `
+        -Candidate $PassingSummary `
+        -OutputJson (Join-Path $RegressionDir "passing-result.json") `
+        -OutputMd (Join-Path $RegressionDir "passing-result.md")
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+
+    & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compare_target_lock_runs.ps1 `
+        -Baseline $BaselineSummary `
+        -Candidate $FailingSummary
+    if ($LASTEXITCODE -ne 2) {
+        Write-Host "Expected target-lock regression gate to reject increased maximum distance."
+        exit 2
+    }
+    $global:LASTEXITCODE = 0
 }
 
 Invoke-Step "Analyze target sample gate" {
