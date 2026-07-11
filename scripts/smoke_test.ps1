@@ -64,6 +64,7 @@ Invoke-Step "Python compile" {
         src\validate_yolo_dataset.py `
         src\auto_label_pipes.py `
         src\auto_label_pipes_hybrid.py `
+        src\detector_backend_status.py `
         src\collect_yolo_issues.py `
         src\collect_target_samples.py `
         src\export_yolo_to_coco.py `
@@ -1111,6 +1112,47 @@ if "-FallbackDemo" not in fallback_command:
 
 print("camera selector launch command ok")
 '@ | & $PythonExe -
+}
+
+Invoke-Step "Detector backend readiness" {
+    $env:CROSSCAM_BACKEND_STATUS_ROOT = Join-Path $SmokeRoot "backend_status"
+    @'
+import os
+from pathlib import Path
+
+from src.detector_backend_status import collect_backend_statuses, selector_status_text
+
+root = Path(os.environ["CROSSCAM_BACKEND_STATUS_ROOT"])
+yolo = root / "runs_yolo" / "pipe_yolov8n_hybrid_0710_v2" / "weights" / "best.pt"
+rfdetr = root / "runs_rfdetr" / "pipe_rfdetr_nano" / "checkpoint_best_total.pth"
+yolo.parent.mkdir(parents=True, exist_ok=True)
+rfdetr.parent.mkdir(parents=True, exist_ok=True)
+yolo.write_bytes(b"fake yolo")
+rfdetr.write_bytes(b"fake rfdetr")
+
+ready = collect_backend_statuses(root, available_modules={"ultralytics", "rfdetr"})
+if not ready["yolo"].project_ready or not ready["rfdetr"].project_ready:
+    raise SystemExit("Expected fake YOLO and RF-DETR project backends to be ready.")
+missing_dependency = collect_backend_statuses(root, available_modules={"ultralytics"})
+if missing_dependency["rfdetr"].project_ready or missing_dependency["rfdetr"].dependency_available:
+    raise SystemExit("Expected RF-DETR to remain unavailable when its dependency is missing.")
+if "rfdetr" not in selector_status_text(missing_dependency["rfdetr"]):
+    raise SystemExit("Expected selector RF-DETR status to explain that the backend is not ready.")
+print("detector backend readiness ok")
+'@ | & $PythonExe -
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+
+    $BackendJson = & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check_detector_backends.ps1 -Json
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+    $BackendPayload = $BackendJson | ConvertFrom-Json
+    if (-not $BackendPayload.motion.project_ready -or -not $BackendPayload.PSObject.Properties["yolo"] -or -not $BackendPayload.PSObject.Properties["rfdetr"]) {
+        Write-Host "Expected backend status JSON to include motion, yolo, and rfdetr."
+        exit 2
+    }
 }
 
 Invoke-Step "RF-DETR adapter fake module" {

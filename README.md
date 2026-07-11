@@ -21,6 +21,12 @@ yolo：Ultralytics YOLO 检测入口，用于后续接入自训练 pipe 模型
 rfdetr：Roboflow RF-DETR 检测入口，用作后续可选检测后端对比
 ```
 
+可以双击 `check_detector_backends.bat`，或运行下面的命令检查三种后端在当前电脑上是否真正就绪。摄像头选择窗口也会直接显示所选后端的依赖和项目权重状态：
+
+```powershell
+.\check_detector_backends.bat
+```
+
 推荐演示方式是先让目标在画面中产生检测框，再把当前最佳检测注册成具体目标，系统保存它的轻量视觉模板，之后在两个摄像头中持续寻找与它相似的候选。最终铁管场景应逐步从 `motion` 切到 `yolo`，再用自采集数据训练 `pipe` 类别模型；`rfdetr` 作为后续可选检测后端，用来和 YOLO 做效果对比。
 
 ## 技术栈与版本
@@ -555,6 +561,8 @@ python src\crosscam_mvp.py --cam-a 0 --cam-b 2 --backend dshow --detector yolo -
 ### 7. RF-DETR 可选检测入口
 
 RF-DETR 现在作为可选检测后端接入，用来和 YOLO 做后续效果对比。默认仍建议优先使用 `-PipeMode` 的 YOLO 流程；RF-DETR 需要单独安装依赖。
+
+“可选择”只表示代码入口已经接入。只有自检同时显示 `rfdetr` 依赖已安装并找到 `runs_rfdetr/` 下的项目训练权重时，RF-DETR 才算真正用于本项目；否则当前正式识别仍是 YOLO。
 
 `-ModelSize` / `--rfdetr-size` 支持 `nano`、`small`、`base`、`medium`、`large`、`xlarge`、`2xlarge`。当前默认用 `nano`，方便先验证流程。
 

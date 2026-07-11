@@ -10,6 +10,11 @@ from pathlib import Path
 import cv2
 
 try:
+    from detector_backend_status import collect_backend_statuses, selector_status_text
+except ImportError:
+    from src.detector_backend_status import collect_backend_statuses, selector_status_text
+
+try:
     import tkinter as tk
     from tkinter import messagebox
     from PIL import Image, ImageTk
@@ -403,6 +408,7 @@ def build_selector(args: argparse.Namespace, probes: list[CameraProbe]) -> int:
     rfdetr_conf_var = tk.StringVar(value=extra_arg_value(args.extra_arg, "-RfDetrConf", "0.35"))
     capture_scenario_var = tk.StringVar(value=args.capture_scenario)
     capture_output_root_var = tk.StringVar(value=args.capture_output_root)
+    backend_status_var = tk.StringVar()
 
     detector_frame = tk.Frame(options_frame)
     detector_frame.pack(fill="x", pady=(0, 6))
@@ -420,6 +426,15 @@ def build_selector(args: argparse.Namespace, probes: list[CameraProbe]) -> int:
     tk.Entry(rfdetr_frame, textvariable=rfdetr_num_classes_var, width=6).pack(side="left", padx=(0, 10))
     tk.Label(rfdetr_frame, text="置信度").pack(side="left", padx=(0, 6))
     tk.Entry(rfdetr_frame, textvariable=rfdetr_conf_var, width=6).pack(side="left")
+
+    backend_status_label = tk.Label(
+        options_frame,
+        textvariable=backend_status_var,
+        font=("Microsoft YaHei UI", 9),
+        wraplength=760,
+        justify="left",
+    )
+    backend_status_label.pack(fill="x", pady=(0, 6))
 
     display_frame = tk.Frame(options_frame)
     display_frame.pack(fill="x", pady=(0, 6))
@@ -450,13 +465,26 @@ def build_selector(args: argparse.Namespace, probes: list[CameraProbe]) -> int:
     tk.Label(capture_frame, text="保存目录").pack(side="left", padx=(0, 6))
     tk.Entry(capture_frame, textvariable=capture_output_root_var, width=32).pack(side="left")
 
+    def update_backend_status(*_args) -> None:
+        statuses = collect_backend_statuses(
+            repo_root,
+            yolo_model=extra_arg_value(args.extra_arg, "-YoloModel", ""),
+            rfdetr_size=rfdetr_size_var.get(),
+            rfdetr_weights=rfdetr_weights_var.get().strip(),
+        )
+        status = statuses[detector_var.get()]
+        backend_status_var.set(selector_status_text(status))
+        backend_status_label.configure(fg="#176b3a" if status.project_ready else "#9a5a00")
+
     def on_pipe_mode_change(*_args) -> None:
         if pipe_var.get() and detector_var.get() not in PIPE_DETECTORS:
             detector_var.set("yolo")
+        update_backend_status()
 
     def on_detector_change(*_args) -> None:
         if detector_var.get() not in PIPE_DETECTORS and pipe_var.get():
             pipe_var.set(False)
+        update_backend_status()
 
     def on_target_lock_gate_change(*_args) -> None:
         if target_lock_gate_var.get():
@@ -465,7 +493,10 @@ def build_selector(args: argparse.Namespace, probes: list[CameraProbe]) -> int:
 
     pipe_var.trace_add("write", on_pipe_mode_change)
     detector_var.trace_add("write", on_detector_change)
+    rfdetr_size_var.trace_add("write", update_backend_status)
+    rfdetr_weights_var.trace_add("write", update_backend_status)
     target_lock_gate_var.trace_add("write", on_target_lock_gate_change)
+    update_backend_status()
 
     list_outer = tk.Frame(root)
     list_outer.pack(fill="both", expand=True, padx=16, pady=8)
