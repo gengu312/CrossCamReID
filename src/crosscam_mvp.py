@@ -1743,6 +1743,32 @@ def clamp_roi(
     return x, y, w, h
 
 
+def trail_direction_arrow(
+    points: Iterable[tuple[int, int]],
+    min_displacement: float = 6.0,
+    arrow_length: float = 30.0,
+) -> Optional[tuple[tuple[int, int], tuple[int, int]]]:
+    recent_points = list(points)[-8:]
+    if len(recent_points) < 2:
+        return None
+
+    current = recent_points[-1]
+    threshold = max(1.0, float(min_displacement))
+    for previous in reversed(recent_points[:-1]):
+        dx = current[0] - previous[0]
+        dy = current[1] - previous[1]
+        distance = math.hypot(dx, dy)
+        if distance < threshold:
+            continue
+        scale = max(8.0, float(arrow_length)) / distance
+        arrow_tip = (
+            int(round(current[0] + dx * scale)),
+            int(round(current[1] + dy * scale)),
+        )
+        return current, arrow_tip
+    return None
+
+
 def draw_tracks(
     frame: np.ndarray,
     tracks: Iterable[Track],
@@ -1797,6 +1823,17 @@ def draw_tracks(
             points = list(track.history)
             for i in range(1, len(points)):
                 cv2.line(output, points[i - 1], points[i], color, 2, cv2.LINE_AA)
+            direction_arrow = trail_direction_arrow(points)
+            if direction_arrow is not None:
+                cv2.arrowedLine(
+                    output,
+                    direction_arrow[0],
+                    direction_arrow[1],
+                    color,
+                    3,
+                    cv2.LINE_AA,
+                    tipLength=0.32,
+                )
     return output
 
 
@@ -2959,7 +2996,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--flip-a", action="store_true", help="Horizontally flip camera A frames.")
     parser.add_argument("--flip-b", action="store_true", help="Horizontally flip camera B frames.")
     parser.add_argument("--flip-c", action="store_true", help="Horizontally flip camera C frames.")
-    parser.add_argument("--show-trails", action="store_true", help="Draw track center history trails.")
+    parser.add_argument(
+        "--show-trails",
+        action="store_true",
+        help="Draw track center history trails with a current direction arrow.",
+    )
     parser.add_argument("--probe", action="store_true", help="List available camera indexes.")
     parser.add_argument("--probe-max", type=int, default=5, help="Max camera index for --probe.")
     parser.add_argument(

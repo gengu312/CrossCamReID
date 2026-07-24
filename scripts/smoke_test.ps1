@@ -533,6 +533,7 @@ from src.crosscam_mvp import (
     select_stable_target_match,
     synthetic_camera_count,
     synthetic_sources,
+    trail_direction_arrow,
     target_status_for_ui,
 )
 
@@ -590,6 +591,12 @@ if chosen is not near or chosen.target_choice != "sticky":
 chosen = select_stable_target_match([adjacent, near], profile, stick_distance=80, switch_margin=0.01)
 if chosen is not adjacent or chosen.target_choice != "switch":
     raise SystemExit("Expected adjacent target to win only when similarity gain is large enough.")
+
+direction_arrow = trail_direction_arrow([(10, 10), (12, 10), (15, 10), (20, 10)])
+if direction_arrow != ((20, 10), (50, 10)):
+    raise SystemExit(f"Expected a right-pointing trail arrow, got {direction_arrow}.")
+if trail_direction_arrow([(10, 10), (11, 10), (10, 11), (11, 11)]) is not None:
+    raise SystemExit("Expected small stationary jitter not to produce a direction arrow.")
 
 claim_tracker = CrossCameraTracker(camera_count=2)
 claim_tracker.activate_registered_target(1)

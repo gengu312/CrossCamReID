@@ -634,7 +634,11 @@ def build_selector(args: argparse.Namespace, probes: list[CameraProbe]) -> int:
     ).grid(row=0, column=1, sticky="w", padx=(0, 22))
     ttk.Checkbutton(display_group, text="镜像画面", variable=flip_var).grid(row=0, column=2, sticky="w", padx=(0, 18))
     ttk.Checkbutton(display_group, text="交换左右", variable=swap_var).grid(row=0, column=3, sticky="w", padx=(0, 18))
-    ttk.Checkbutton(display_group, text="显示轨迹线", variable=trails_var).grid(row=0, column=4, sticky="w")
+    ttk.Checkbutton(display_group, text="显示轨迹和方向箭头", variable=trails_var).grid(
+        row=0,
+        column=4,
+        sticky="w",
+    )
 
     run_group = ttk.LabelFrame(
         operation_tab,
